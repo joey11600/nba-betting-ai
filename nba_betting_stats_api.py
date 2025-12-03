@@ -690,7 +690,7 @@ class NBABettingStatsAPI:
             else:
                 opp = opp_raw
 
-            # NEW: game result (team win/loss)
+            # Game result (team win/loss)
             wl_raw = str(row.get("WL", "")).upper()   # usually "W" or "L"
             if wl_raw.startswith("W"):
                 game_result = "win"
@@ -699,14 +699,21 @@ class NBABettingStatsAPI:
             else:
                 game_result = None
 
+            # Game ID – handle both Game_ID and GAME_ID just in case
+            game_id = None
+            for key in ("Game_ID", "GAME_ID", "game_id"):
+                if key in row.index:
+                    game_id = row[key]
+                    break
+
             chart_games.append({
-                "game_id": row.get("GAME_ID"),
+                "game_id": str(game_id) if game_id is not None else None,
                 "date": row["GAME_DATE_DT"].strftime("%Y-%m-%d"),
                 "opponent": opp,
                 "line": None,                 # still no betting line
                 "value": float(row["VALUE"]),
-                "result": None,               # reserved for over/under later
-                "game_result": game_result,   # <-- W/L per game
+                "result": None,               # reserved for future over/under result
+                "game_result": game_result,   # W/L for the team
             })
 
         # 5) Player info
