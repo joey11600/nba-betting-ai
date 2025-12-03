@@ -690,24 +690,24 @@ class NBABettingStatsAPI:
             else:
                 opp = opp_raw
 
-        # NEW: game result (team win/loss)
-        wl_raw = str(row.get("WL", "")).upper()   # usually "W" or "L"
-        if wl_raw.startswith("W"):
-            game_result = "win"
-        elif wl_raw.startswith("L"):
-            game_result = "loss"
-        else:
-            game_result = None
+            # NEW: game result (team win/loss)
+            wl_raw = str(row.get("WL", "")).upper()   # usually "W" or "L"
+            if wl_raw.startswith("W"):
+                game_result = "win"
+            elif wl_raw.startswith("L"):
+                game_result = "loss"
+            else:
+                game_result = None
 
-        chart_games.append({
-            "game_id": row.get("GAME_ID"),
-            "date": row["GAME_DATE_DT"].strftime("%Y-%m-%d"),
-            "opponent": opp,
-            "line": None,                 # still no betting line
-            "value": float(row["VALUE"]),
-            "result": None,               # keep this free for future "over/under"
-            "game_result": game_result,   # <-- NEW FIELD
-        })
+            chart_games.append({
+                "game_id": row.get("GAME_ID"),
+                "date": row["GAME_DATE_DT"].strftime("%Y-%m-%d"),
+                "opponent": opp,
+                "line": None,                 # still no betting line
+                "value": float(row["VALUE"]),
+                "result": None,               # reserved for over/under later
+                "game_result": game_result,   # <-- W/L per game
+            })
 
         # 5) Player info
         player_info = self.get_player_by_id(player_id) or {
