@@ -9,6 +9,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
+from nba_api.stats.endpoints import PlayerGameLog
 import time
 import pandas as pd
 
@@ -484,6 +485,138 @@ class NBABettingStatsAPI:
             return stake * (odds / 100)
         else:
             return stake * (100 / abs(odds))
+
+    def _get_current_season_start_year(self) -> int:
+        today = datetime.utcnow()
+        if today.month >= 7:
+            return today.year
+        else:
+            return today.year - 1
+
+    def _get_season_strings(self, num_seasons: int = 3):
+        start_year = self._get_current_season_start_year()
+        seasons = []
+        for i in range(num_seasons):
+            y = start_year - i
+            seasons.append(f"{y}-{str(y + 1)[-2:]}")
+        return seasons
+
+    def _get_player_gamelog_multi_season(self, player_id: int, max_games: int,
+                                         num_seasons: int = 3):
+        all_logs = []
+        for season in self._get_season_strings(num_seasons=num_seasons):
+            try:
+                gl = playergamelog.PlayerGameLog(
+                    player_id=player_id, season=season,
+                    season_type_all_star="Regular Season"
+                )
+                df = gl.get_data_frames()[0]
+                if not df.empty:
+                    all_logs.append(df)
+            except Exception as e:
+                print(f"⚠️ Failed season {season}: {e}")
+                continue
+
+            if sum(len(df) for df in all_logs) >= max_games:
+                break
+
+        if not all_logs:
+            return pd.DataFrame()
+
+        combined = pd.concat(all_logs, ignore_index=True)
+        combined["GAME_DATE_DT"] = pd.to_datetime(combined["GAME_DATE"])
+        combined = combined.sort_values("GAME_DATE_DT", ascending=False)
+
+        return combined.head(max_games).reset_index(drop=True)
+
+    def get_player_research(self, player_id: int, stat: str, window: str):
+        window_map = {"L5": 5, "L10": 10, "L15": 15}
+
+        stat = stat.lower()
+        window = window.upper()
+
+        if window in window_map:
+            num_games = window_map[window]
+            logs = self._get_player_gamelog_multi_season(
+                player_id=player_id,
+                max_games=num_games,
+                num_seasons=3
+            )
+        else:
+            logs = pd.DataFrame()
+
+        if logs.empty:
+            return {
+                "player": {"player_id": player_id},
+                "chart": {"games": []},
+                "summary": {"games": 0},
+                "context": {"stat": stat, "window": window}
+            }
+
+        def calc_value(row):
+            pts, reb, ast = row["PTS"], row["REB"], row["AST"]
+            threes = row["FG3M"]
+            if stat == "pts": return pts
+            if stat == "reb": return reb
+            if stat == "ast": return ast
+            if stat == "3pm": return threes
+            if stat == "pra": return pts + reb + ast
+            if stat == "pr": return pts + reb
+            if stat == "ra": return reb + ast
+            return pts
+
+        logs["VALUE"] = logs.apply(calc_value, axis=1)
+
+        values = logs["VALUE"].tolist()
+
+        summary = {
+            "games": len(values),
+            "avg": float(pd.Series(values).mean()),
+            "min": float(pd.Series(values).min()),
+            "max": float(pd.Series(values).max()),
+            "median": float(pd.Series(values).median()),
+            "std_dev": float(pd.Series(values).std(ddof=0)),
+            "hit_rate": None
+        }
+
+        chart_games = []
+        for _, row in logs.iterrows():
+            opp_raw = row["MATCHUP"]
+            if "vs" in opp_raw:
+                opp = "vs " + opp_raw.split("vs")[1].strip()
+            elif "@" in opp_raw:
+                opp = "@ " + opp_raw.split("@")[1].strip()
+            else:
+                opp = opp_raw
+
+            chart_games.append({
+                "game_id": row["GAME_ID"],
+                "date": row["GAME_DATE_DT"].strftime("%Y-%m-%d"),
+                "opponent": opp,
+                "line": None,
+                "value": float(row["VALUE"]),
+                "result": None
+            })
+
+        player_info = self.get_player_by_id(player_id) or {
+            "player_id": player_id,
+            "full_name": "",
+            "first_name": "",
+            "last_name": "",
+            "team": "",
+            "position": ""
+        }
+
+        return {
+            "player": player_info,
+            "chart": {"games": chart_games},
+            "summary": summary,
+            "context": {
+                "stat": stat,
+                "window": window,
+                "window_label": f"Last {window_map.get(window, len(values))} games"
+            }
+        }
     
     # ======================
     # ANALYTICS
