@@ -119,75 +119,73 @@ class NBABettingStatsAPI:
     # ======================
     
     def search_players(self, search_term: str, limit: int = 10) -> List[Dict]:
-    """Search for NBA players using active players list from nba_api"""
-    if not NBA_API_AVAILABLE:
-        return []
+		"""Search for NBA players using active players list from nba_api"""
 
-    # Cache player list for 1 hour
-    if (
-        self._player_cache is None
-        or self._player_cache_time is None
-        or time.time() - self._player_cache_time > 3600
-    ):
-        print("🔄 Loading active NBA players from static list...")
+		if not NBA_API_AVAILABLE:
+			return []
 
-        try:
-            from nba_api.stats.static import players as static_players
+		# Cache player list for 1 hour
+		if (
+			self._player_cache is None
+			or self._player_cache_time is None
+			or time.time() - self._player_cache_time > 3600
+		):
+			print("🔄 Loading active NBA players from static list...")
 
-            all_players = static_players.get_players()  # big list of dicts
+			try:
+				from nba_api.stats.static import players as static_players
+				all_players = static_players.get_players()
 
-            self._player_cache = []
-            for p in all_players:
-                # Only keep active players
-                if not p.get("is_active"):
-                    continue
+				self._player_cache = []
+				for p in all_players:
+					if not p.get("is_active"):
+						continue
 
-                self._player_cache.append(
-                    {
-                        "id": p["id"],
-                        "full_name": p["full_name"],
-                        "first_name": p["first_name"],
-                        "last_name": p["last_name"],
-                    }
-                )
+					self._player_cache.append(
+						{
+							"id": p["id"],
+							"full_name": p["full_name"],
+							"first_name": p["first_name"],
+							"last_name": p["last_name"],
+						}
+					)
 
-            self._player_cache_time = time.time()
-            print(f"✅ Loaded {len(self._player_cache)} active NBA players")
+				self._player_cache_time = time.time()
+				print(f"✅ Loaded {len(self._player_cache)} active NBA players")
 
-        except Exception as e:
-            print(f"⚠️ Error loading active players: {e}")
-            self._player_cache = []
-            self._player_cache_time = time.time()
+			except Exception as e:
+				print(f"⚠️ Error loading active players: {e}")
+				self._player_cache = []
+				self._player_cache_time = time.time()
 
-    # Search the cache
-    search_lower = search_term.lower().strip()
-    if not search_lower:
-        return []
+		search_lower = search_term.lower().strip()
+		if not search_lower:
+			return []
 
-    matches = []
-    for player in self._player_cache:
-        full_name = player["full_name"].lower()
-        first_name = player.get("first_name", "").lower()
-        last_name = player.get("last_name", "").lower()
+		matches = []
+		for player in self._player_cache:
+			full_name = player["full_name"].lower()
+			first_name = player.get("first_name", "").lower()
+			last_name = player.get("last_name", "").lower()
 
-        if (
-            search_lower in full_name
-            or search_lower in last_name
-            or search_lower in first_name
-        ):
-            matches.append(
-                {
-                    "player_id": player["id"],
-                    "full_name": player["full_name"],
-                    "first_name": player.get("first_name", ""),
-                    "last_name": player.get("last_name", ""),
-                }
-            )
+			if (
+				search_lower in full_name
+				or search_lower in last_name
+				or search_lower in first_name
+			):
+				matches.append(
+					{
+						"player_id": player["id"],
+						"full_name": player["full_name"],
+						"first_name": player.get("first_name", ""),
+						"last_name": player.get("last_name", ""),
+					}
+				)
 
-            if len(matches) >= limit:
-                break
+				if len(matches) >= limit:
+					break
 
-    return matches
+		return matches
     
     def get_player_by_id(self, player_id: int) -> Optional[Dict]:
         """Get player info by ID"""
