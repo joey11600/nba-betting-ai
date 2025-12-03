@@ -149,11 +149,6 @@ class NBABettingStatsAPI:
                 self._player_cache = []
                 self._player_cache_time = time.time()
 
-            except Exception as e:
-                print(f"❌ Error loading players: {e}")
-                self._player_cache = []
-                self._player_cache_time = time.time()
-
         # Search the cache
         search_lower = search_term.lower().strip()
 
@@ -421,10 +416,10 @@ class NBABettingStatsAPI:
             df = gamelog.get_data_frames()[0]
             
             # Find game on that date
-            df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
-            game_date_obj = pd.to_datetime(game_date)
-            
-            matching_games = df[df['GAME_DATE'] == game_date_obj]
+            df["GAME_DATE_DT"] = pd.to_datetime(df["GAME_DATE"]).dt.date
+            game_date_obj = pd.to_datetime(game_date).date()
+            matching_games = df[df["GAME_DATE_DT"] == game_date_obj]
+
             
             if not matching_games.empty:
                 return matching_games.iloc[0].to_dict()
@@ -485,49 +480,6 @@ class NBABettingStatsAPI:
             return stake * (odds / 100)
         else:
             return stake * (100 / abs(odds))
-
-    def _get_current_season_start_year(self) -> int:
-        today = datetime.utcnow()
-        if today.month >= 7:
-            return today.year
-        else:
-            return today.year - 1
-
-    def _get_season_strings(self, num_seasons: int = 3):
-        start_year = self._get_current_season_start_year()
-        seasons = []
-        for i in range(num_seasons):
-            y = start_year - i
-            seasons.append(f"{y}-{str(y + 1)[-2:]}")
-        return seasons
-
-    def _get_player_gamelog_multi_season(self, player_id: int, max_games: int,
-                                         num_seasons: int = 3):
-        all_logs = []
-        for season in self._get_season_strings(num_seasons=num_seasons):
-            try:
-                gl = playergamelog.PlayerGameLog(
-                    player_id=player_id, season=season,
-                    season_type_all_star="Regular Season"
-                )
-                df = gl.get_data_frames()[0]
-                if not df.empty:
-                    all_logs.append(df)
-            except Exception as e:
-                print(f"⚠️ Failed season {season}: {e}")
-                continue
-
-            if sum(len(df) for df in all_logs) >= max_games:
-                break
-
-        if not all_logs:
-            return pd.DataFrame()
-
-        combined = pd.concat(all_logs, ignore_index=True)
-        combined["GAME_DATE_DT"] = pd.to_datetime(combined["GAME_DATE"])
-        combined = combined.sort_values("GAME_DATE_DT", ascending=False)
-
-        return combined.head(max_games).reset_index(drop=True)
 
     # ======================
     # PLAYER RESEARCH (multi-season last-N games)
