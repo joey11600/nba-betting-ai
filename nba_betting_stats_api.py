@@ -676,9 +676,9 @@ class NBABettingStatsAPI:
         # 4) Build chart data (one entry per game)
         chart_games = []
         for _, row in logs.iterrows():
+            # Parse opponent nicely
             opp_raw = row.get("MATCHUP", "")
             if " vs. " in opp_raw:
-                # Sometimes format: "LAL vs. PHX"
                 parts = opp_raw.split(" vs. ")
                 opp = "vs " + parts[1].strip()
             elif "vs" in opp_raw:
@@ -690,18 +690,24 @@ class NBABettingStatsAPI:
             else:
                 opp = opp_raw
 
-            game_id = row.get("GAME_ID", None)
-            if game_id is None:
-                game_id = row.get("Game_ID", None)
+        # NEW: game result (team win/loss)
+        wl_raw = str(row.get("WL", "")).upper()   # usually "W" or "L"
+        if wl_raw.startswith("W"):
+            game_result = "win"
+        elif wl_raw.startswith("L"):
+            game_result = "loss"
+        else:
+            game_result = None
 
-            chart_games.append({
-                "game_id": game_id,
-                "date": row["GAME_DATE_DT"].strftime("%Y-%m-%d"),
-                "opponent": opp,
-                "line": None,
-                "value": float(row["VALUE"]),
-                "result": None,
-            })
+        chart_games.append({
+            "game_id": row.get("GAME_ID"),
+            "date": row["GAME_DATE_DT"].strftime("%Y-%m-%d"),
+            "opponent": opp,
+            "line": None,                 # still no betting line
+            "value": float(row["VALUE"]),
+            "result": None,               # keep this free for future "over/under"
+            "game_result": game_result,   # <-- NEW FIELD
+        })
 
         # 5) Player info
         player_info = self.get_player_by_id(player_id) or {
