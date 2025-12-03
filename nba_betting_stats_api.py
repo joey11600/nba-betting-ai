@@ -129,13 +129,24 @@ class NBABettingStatsAPI:
             or self._player_cache_time is None
             or time.time() - self._player_cache_time > 3600
         ):
-            print("🔄 Loading NBA players...")
+            print("🔄 Loading ACTIVE NBA players...")
 
             try:
-                # Use static list - it works reliably
-                self._player_cache = players.get_players()
+                # Get everyone, then keep only active players (rookies included)
+                all_players = players.get_players()
+
+                self._player_cache = [
+                    p for p in all_players
+                    if p.get("is_active")  # True only for current NBA players
+                ]
+
                 self._player_cache_time = time.time()
-                print(f"✅ Loaded {len(self._player_cache)} players")
+                print(f"✅ Loaded {len(self._player_cache)} active players")
+
+            except Exception as e:
+                print(f"❌ Error loading players: {e}")
+                self._player_cache = []
+                self._player_cache_time = time.time()
 
             except Exception as e:
                 print(f"❌ Error loading players: {e}")
