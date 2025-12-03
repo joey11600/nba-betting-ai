@@ -119,73 +119,64 @@ class NBABettingStatsAPI:
     # ======================
     
     def search_players(self, search_term: str, limit: int = 10) -> List[Dict]:
-		"""Search for NBA players using active players list from nba_api"""
+        """Search for NBA players using static list"""
+        if not NBA_API_AVAILABLE:
+            return []
 
-		if not NBA_API_AVAILABLE:
-			return []
+        # Cache player list for 1 hour
+        if (
+            self._player_cache is None
+            or self._player_cache_time is None
+            or time.time() - self._player_cache_time > 3600
+        ):
+            print("🔄 Loading NBA players...")
 
-		# Cache player list for 1 hour
-		if (
-			self._player_cache is None
-			or self._player_cache_time is None
-			or time.time() - self._player_cache_time > 3600
-		):
-			print("🔄 Loading active NBA players from static list...")
+            try:
+                # Use static list - it works reliably
+                self._player_cache = players.get_players()
+                self._player_cache_time = time.time()
+                print(f"✅ Loaded {len(self._player_cache)} players")
 
-			try:
-				from nba_api.stats.static import players as static_players
-				all_players = static_players.get_players()
+            except Exception as e:
+                print(f"❌ Error loading players: {e}")
+                self._player_cache = []
+                self._player_cache_time = time.time()
 
-				self._player_cache = []
-				for p in all_players:
-					if not p.get("is_active"):
-						continue
+        # Search the cache
+        search_lower = search_term.lower().strip()
 
-					self._player_cache.append(
-						{
-							"id": p["id"],
-							"full_name": p["full_name"],
-							"first_name": p["first_name"],
-							"last_name": p["last_name"],
-						}
-					)
+        if not search_lower:
+            return []
 
-				self._player_cache_time = time.time()
-				print(f"✅ Loaded {len(self._player_cache)} active NBA players")
+        if not self._player_cache:
+            print("⚠️ Player cache is empty!")
+            return []
 
-			except Exception as e:
-				print(f"⚠️ Error loading active players: {e}")
-				self._player_cache = []
-				self._player_cache_time = time.time()
+        matches = []
+        for player in self._player_cache:
+            full_name = player.get("full_name", "").lower()
+            first_name = player.get("first_name", "").lower()
+            last_name = player.get("last_name", "").lower()
 
-		search_lower = search_term.lower().strip()
-		if not search_lower:
-			return []
+            if (
+                search_lower in full_name
+                or search_lower in last_name
+                or search_lower in first_name
+            ):
+                matches.append(
+                    {
+                        "player_id": player["id"],
+                        "full_name": player["full_name"],
+                        "first_name": player.get("first_name", ""),
+                        "last_name": player.get("last_name", ""),
+                    }
+                )
 
-		matches = []
-		for player in self._player_cache:
-			full_name = player["full_name"].lower()
-			first_name = player.get("first_name", "").lower()
-			last_name = player.get("last_name", "").lower()
+                if len(matches) >= limit:
+                    break
 
-			if (
-				search_lower in full_name
-				or search_lower in last_name
-				or search_lower in first_name
-			):
-				matches.append(
-					{
-						"player_id": player["id"],
-						"full_name": player["full_name"],
-						"first_name": player.get("first_name", ""),
-						"last_name": player.get("last_name", ""),
-					}
-				)
-
-				if len(matches) >= limit:
-					break
-
-		return matches
+        print(f"🔍 Search '{search_term}' found {len(matches)} matches")
+        return matches
     
     def get_player_by_id(self, player_id: int) -> Optional[Dict]:
         """Get player info by ID"""
