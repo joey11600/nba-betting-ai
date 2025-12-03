@@ -434,6 +434,28 @@ def get_player_research():
         print("Error in /api/research/player:", e)
         return jsonify({"success": False, "error": "Internal server error"}), 500
 
+@app.route('/api/research/player', methods=['GET'])
+def research_player():
+    try:
+        player_id = int(request.args.get('player_id'))
+        stat = request.args.get('stat', 'pts')
+        window = request.args.get('window', 'L15')
+
+        data = api.get_player_research(
+            player_id=player_id,
+            stat=stat,
+            window=window
+        )
+
+        return jsonify({"success": True, **data})
+    except Exception as e:
+        print("Error in /api/research/player:", e)
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
 # ======================
 # HEALTH CHECK
 # ======================
