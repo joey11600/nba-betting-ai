@@ -690,13 +690,17 @@ class NBABettingStatsAPI:
             else:
                 opp = opp_raw
 
+            game_id = row.get("GAME_ID", None)
+            if game_id is None:
+                game_id = row.get("Game_ID", None)
+
             chart_games.append({
-                "game_id": row.get("GAME_ID"),
+                "game_id": game_id,
                 "date": row["GAME_DATE_DT"].strftime("%Y-%m-%d"),
                 "opponent": opp,
-                "line": None,          # no betting line yet
+                "line": None,
                 "value": float(row["VALUE"]),
-                "result": None         # no over/under yet
+                "result": None,
             })
 
         # 5) Player info
