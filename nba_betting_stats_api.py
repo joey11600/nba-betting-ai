@@ -180,6 +180,7 @@ class NBABettingStatsAPI:
                         "full_name": player["full_name"],
                         "first_name": player.get("first_name", ""),
                         "last_name": player.get("last_name", ""),
+                        "headshot_url": f"https://cdn.nba.com/headshots/nba/latest/260x190/{player['id']}.png",
                     }
                 )
 
