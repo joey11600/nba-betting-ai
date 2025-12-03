@@ -119,7 +119,7 @@ class NBABettingStatsAPI:
     # ======================
     
     def search_players(self, search_term: str, limit: int = 10) -> List[Dict]:
-        """Search for players - uses all players not just active"""
+        """Search for NBA players using live NBA API data"""
         if not NBA_API_AVAILABLE:
             return []
         
@@ -128,24 +128,64 @@ class NBABettingStatsAPI:
             self._player_cache_time is None or 
             time.time() - self._player_cache_time > 3600):
             
+            print("🔄 Fetching current NBA players from live API...")
+            
             try:
-                # Use get_players() instead of get_active_players()
-                # This includes ALL players in NBA history, including recent rookies
-                self._player_cache = players.get_players()
+                # Import here to avoid issues
+                from nba_api.stats.endpoints import commonallplayers
+                
+                # Get ALL current season players (includes 2024 rookies)
+                time.sleep(0.6)  # Rate limit
+                
+                response = commonallplayers.CommonAllPlayers(
+                    is_only_current_season=1,
+                    league_id='00',
+                    season='2024-25'
+                )
+                
+                df = response.get_data_frames()[0]
+                
+                # Convert to our format
+                self._player_cache = []
+                
+                for _, row in df.iterrows():
+                    full_name = str(row['DISPLAY_FIRST_LAST'])
+                    person_id = int(row['PERSON_ID'])
+                    
+                    # Split name
+                    name_parts = full_name.split()
+                    first_name = name_parts[0] if name_parts else ''
+                    last_name = ' '.join(name_parts[1:]) if len(name_parts) > 1 else full_name
+                    
+                    self._player_cache.append({
+                        'id': person_id,
+                        'full_name': full_name,
+                        'first_name': first_name,
+                        'last_name': last_name
+                    })
+                
                 self._player_cache_time = time.time()
-                print(f"✓ Loaded {len(self._player_cache)} players")
+                print(f"✅ Loaded {len(self._player_cache)} current NBA players")
                 
             except Exception as e:
-                print(f"Error loading players: {e}")
-                self._player_cache = []
-                self._player_cache_time = time.time()
+                print(f"⚠️ Error loading live data: {e}")
+                print("📦 Falling back to static player list...")
+                
+                # Fallback to static list
+                try:
+                    self._player_cache = players.get_players()
+                    self._player_cache_time = time.time()
+                    print(f"✅ Loaded {len(self._player_cache)} players (static)")
+                except:
+                    self._player_cache = []
+                    self._player_cache_time = time.time()
         
+        # Search the cache
         search_lower = search_term.lower().strip()
         
         if not search_lower:
             return []
         
-        # Search by full name or last name
         matches = []
         for player in self._player_cache:
             full_name = player['full_name'].lower()
@@ -155,6 +195,7 @@ class NBABettingStatsAPI:
             if (search_lower in full_name or 
                 search_lower in last_name or
                 search_lower in first_name):
+                
                 matches.append({
                     'player_id': player['id'],
                     'full_name': player['full_name'],
