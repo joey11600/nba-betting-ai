@@ -529,18 +529,93 @@ class NBABettingStatsAPI:
 
         return combined.head(max_games).reset_index(drop=True)
 
+    # ======================
+    # PLAYER RESEARCH (multi-season last-N games)
+    # ======================
+
+    def _get_current_season_start_year(self) -> int:
+        """Return the start year of the current NBA season (e.g. 2025 for 2025-26)."""
+        from datetime import datetime
+
+        today = datetime.utcnow()
+        # NBA season typically starts in Oct; use July as cutoff for simplicity
+        if today.month >= 7:
+            return today.year
+        else:
+            return today.year - 1
+
+    def _get_season_strings(self, num_seasons: int = 3):
+        """
+        Build a list like ['2025-26', '2024-25', '2023-24'] for the last num_seasons.
+        """
+        start_year = self._get_current_season_start_year()
+        seasons = []
+        for i in range(num_seasons):
+            y = start_year - i
+            seasons.append(f"{y}-{str(y + 1)[-2:]}")
+        return seasons
+
+    def _get_player_gamelog_multi_season(self, player_id: int, max_games: int,
+                                         num_seasons: int = 3):
+        """
+        Fetch up to max_games regular season games for a player,
+        going backwards across multiple seasons using nba_api.
+        """
+        from nba_api.stats.endpoints import playergamelog
+        import pandas as pd
+
+        all_logs = []
+
+        for season in self._get_season_strings(num_seasons=num_seasons):
+            try:
+                gl = playergamelog.PlayerGameLog(
+                    player_id=player_id,
+                    season=season,
+                    season_type_all_star="Regular Season"
+                )
+                df = gl.get_data_frames()[0]
+                if not df.empty:
+                    all_logs.append(df)
+            except Exception as e:
+                print(f"⚠️ Failed to load game log for {player_id} season {season}: {e}")
+                continue
+
+            # Stop early if we already have enough games
+            if sum(len(df) for df in all_logs) >= max_games:
+                break
+
+        if not all_logs:
+            return pd.DataFrame()
+
+        combined = pd.concat(all_logs, ignore_index=True)
+
+        # Sort newest → oldest and keep the last max_games
+        combined["GAME_DATE_DT"] = pd.to_datetime(combined["GAME_DATE"])
+        combined = combined.sort_values("GAME_DATE_DT", ascending=False)
+
+        return combined.head(max_games).reset_index(drop=True)
+
     def get_player_research(self, player_id: int, stat: str, window: str):
+        """
+        Return last-N games for a player across multiple seasons using nba_api gamelogs.
+
+        stat: one of ["pts", "reb", "ast", "3pm", "pra", "pr", "ra"]
+        window: "L5", "L10", "L15" (for now)
+        """
+        import pandas as pd
+
         window_map = {"L5": 5, "L10": 10, "L15": 15}
 
         stat = stat.lower()
         window = window.upper()
 
+        # 1) Get the right number of games using multi-season logs
         if window in window_map:
             num_games = window_map[window]
             logs = self._get_player_gamelog_multi_season(
                 player_id=player_id,
                 max_games=num_games,
-                num_seasons=3
+                num_seasons=3,
             )
         else:
             logs = pd.DataFrame()
@@ -550,61 +625,98 @@ class NBABettingStatsAPI:
                 "player": {"player_id": player_id},
                 "chart": {"games": []},
                 "summary": {"games": 0},
-                "context": {"stat": stat, "window": window}
+                "context": {
+                    "stat": stat,
+                    "stat_label": stat.upper(),
+                    "window": window,
+                    "window_label": "No data"
+                }
             }
 
+        # 2) Compute the stat value per game
         def calc_value(row):
-            pts, reb, ast = row["PTS"], row["REB"], row["AST"]
-            threes = row["FG3M"]
-            if stat == "pts": return pts
-            if stat == "reb": return reb
-            if stat == "ast": return ast
-            if stat == "3pm": return threes
-            if stat == "pra": return pts + reb + ast
-            if stat == "pr": return pts + reb
-            if stat == "ra": return reb + ast
+            pts = row.get("PTS", 0)
+            reb = row.get("REB", 0)
+            ast = row.get("AST", 0)
+            threes = row.get("FG3M", 0)
+
+            if stat == "pts":
+                return pts
+            if stat == "reb":
+                return reb
+            if stat == "ast":
+                return ast
+            if stat == "3pm":
+                return threes
+            if stat == "pra":
+                return pts + reb + ast
+            if stat == "pr":
+                return pts + reb
+            if stat == "ra":
+                return reb + ast
+            # default to points
             return pts
 
         logs["VALUE"] = logs.apply(calc_value, axis=1)
 
         values = logs["VALUE"].tolist()
+        s = pd.Series(values)
 
+        # 3) Summary stats over those games
         summary = {
-            "games": len(values),
-            "avg": float(pd.Series(values).mean()),
-            "min": float(pd.Series(values).min()),
-            "max": float(pd.Series(values).max()),
-            "median": float(pd.Series(values).median()),
-            "std_dev": float(pd.Series(values).std(ddof=0)),
-            "hit_rate": None
+            "games": int(len(values)),
+            "avg": float(round(s.mean(), 1)),
+            "min": float(s.min()),
+            "max": float(s.max()),
+            "median": float(s.median()),
+            "std_dev": float(round(s.std(ddof=0), 2)),
+            "hit_rate": None,  # you can add line-based hit-rate later
         }
 
+        # 4) Build chart data (one entry per game)
         chart_games = []
         for _, row in logs.iterrows():
-            opp_raw = row["MATCHUP"]
-            if "vs" in opp_raw:
-                opp = "vs " + opp_raw.split("vs")[1].strip()
+            opp_raw = row.get("MATCHUP", "")
+            if " vs. " in opp_raw:
+                # Sometimes format: "LAL vs. PHX"
+                parts = opp_raw.split(" vs. ")
+                opp = "vs " + parts[1].strip()
+            elif "vs" in opp_raw:
+                parts = opp_raw.split("vs")
+                opp = "vs " + parts[1].strip()
             elif "@" in opp_raw:
-                opp = "@ " + opp_raw.split("@")[1].strip()
+                parts = opp_raw.split("@")
+                opp = "@ " + parts[1].strip()
             else:
                 opp = opp_raw
 
             chart_games.append({
-                "game_id": row["GAME_ID"],
+                "game_id": row.get("GAME_ID"),
                 "date": row["GAME_DATE_DT"].strftime("%Y-%m-%d"),
                 "opponent": opp,
-                "line": None,
+                "line": None,          # no betting line yet
                 "value": float(row["VALUE"]),
-                "result": None
+                "result": None         # no over/under yet
             })
 
+        # 5) Player info
         player_info = self.get_player_by_id(player_id) or {
             "player_id": player_id,
             "full_name": "",
             "first_name": "",
             "last_name": "",
             "team": "",
-            "position": ""
+            "position": "",
+        }
+
+        stat_labels = {
+            "pts": "Points",
+            "reb": "Rebounds",
+            "ast": "Assists",
+            "3pm": "3-Pointers Made",
+            "pra": "Pts+Reb+Ast",
+            "pr": "Pts+Reb",
+            "ra": "Reb+Ast",
         }
 
         return {
@@ -613,9 +725,10 @@ class NBABettingStatsAPI:
             "summary": summary,
             "context": {
                 "stat": stat,
+                "stat_label": stat_labels.get(stat, stat.upper()),
                 "window": window,
-                "window_label": f"Last {window_map.get(window, len(values))} games"
-            }
+                "window_label": f"Last {window_map.get(window, len(values))} games",
+            },
         }
     
     # ======================
