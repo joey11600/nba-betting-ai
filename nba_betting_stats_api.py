@@ -547,7 +547,7 @@ class NBABettingStatsAPI:
 
         return combined.head(max_games).reset_index(drop=True)
 
-        def _get_season_string_for_offset(self, offset: int = 0) -> str:
+    def _get_season_string_for_offset(self, offset: int = 0) -> str:
         """
         offset=0  -> current season
         offset=1  -> last season
