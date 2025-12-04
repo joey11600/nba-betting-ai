@@ -317,8 +317,10 @@ def research_player():
         player_id = int(request.args.get('player_id'))
         stat = request.args.get('stat', 'pts')
         window = request.args.get('window', 'L15')
-        opponent = request.args.get('opponent')  # <-- new
+        opponent = request.args.get('opponent') 
 
+        season_filter = request.args.get('season_filter', 'all')
+        
         data = api.get_player_research(
             player_id=player_id,
             stat=stat,
