@@ -689,8 +689,16 @@ class NBABettingStatsAPI:
         window_map = {"L5": 5, "L10": 10, "L15": 15}
         window_key = (window or "").strip().upper().replace(" ", "_")
 
-        season_filter = (season_filter or "all").lower()
-        result_filter = (result_filter or "all").lower()
+        season_filter = (season_filter or "all").strip().lower()
+
+        raw_result = (result_filter or "all").strip().lower()
+        if raw_result in ("win", "wins", "w", "won"):
+            result_filter = "wins"
+        elif raw_result in ("loss", "losses", "l", "lost"):
+            result_filter = "losses"
+        else:
+            result_filter = "all"
+
 
         # ---------- 1) choose which logs to pull ----------
         if window_key in window_map:
@@ -752,12 +760,13 @@ class NBABettingStatsAPI:
 
         # ---------- 3) apply win/loss filter ----------
         if not logs.empty and "WL" in logs.columns:
-            if result_filter in ("wins", "win", "w"):
-                wl = logs["WL"].astype(str).str.upper()
+            wl = logs["WL"].astype(str).str.upper()
+
+            if result_filter == "wins":
                 logs = logs[wl.str.startswith("W")].copy()
-            elif result_filter in ("losses", "loss", "l"):
-                wl = logs["WL"].astype(str).str.upper()
+            elif result_filter == "losses":
                 logs = logs[wl.str.startswith("L")].copy()
+
 
         # ---------- 4) trim back to L5/L10/L15 after filters ----------
         if not logs.empty and window_key in window_map:
