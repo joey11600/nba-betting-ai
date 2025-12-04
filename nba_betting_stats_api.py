@@ -603,20 +603,31 @@ class NBABettingStatsAPI:
 
     def _filter_logs_vs_opponent(self, logs: pd.DataFrame, opponent_abbrev: str) -> pd.DataFrame:
         """
-        Filter gamelog rows where the opponent matches the given team abbreviation (e.g. 'LAL').
+        Filter gamelog rows where the opponent matches the given team
+        abbreviation or team name (e.g. 'DEN' or 'Denver Nuggets').
         """
-        if logs.empty:
+        if logs.empty or not opponent_abbrev:
             return logs
 
-        opp = opponent_abbrev.strip().upper()
-        if not opp:
-            return logs
+        opp_raw = opponent_abbrev.strip().upper()
+        opp = opp_raw
 
-        # MATCHUP strings look like "LAL vs. BOS" or "LAL @ BOS"
+        # If they sent a full name, map it to an abbreviation
+        if NBA_API_AVAILABLE and len(opp_raw) > 3:
+            try:
+                all_teams = teams.get_teams()
+                for t in all_teams:
+                    full_name = t["full_name"].upper()
+                    nickname = t["nickname"].upper()
+                    if opp_raw in full_name or opp_raw == nickname:
+                        opp = t["abbreviation"].upper()
+                        break
+            except Exception:
+                pass
+
         mask = logs["MATCHUP"].str.contains(rf"\b{opp}\b", na=False)
         filtered = logs[mask].copy()
         return filtered.reset_index(drop=True)
-
 
     def get_player_research(
         self,
@@ -630,123 +641,126 @@ class NBABettingStatsAPI:
         """
         Return last-N games or season / H2H slice for a player.
 
-        stat: supports:
+        stat: one of
             - "pts", "reb", "ast", "3pm"
-            - "pts+reb+ast", "pra"
-            - "pts+reb", "pr"
-            - "pts+ast", "pa"
-            - "reb+ast", "ast+reb", "ra"
-            - "blocks", "blk"
-            - "steals", "stl"
+            - "pra" (Pts+Reb+Ast)
+            - "pr"  (Pts+Reb)
+            - "ra"  (Reb+Ast)
+            - "pa"  (Pts+Ast)
+            - "stl", "blk"
+            plus various text variants like "Pts + Reb + Ast", etc.
+
         window:
             - "L5", "L10", "L15"
             - "THIS_SEASON" / "THIS SEASON"
             - "LAST_SEASON" / "LAST SEASON"
-            - "H2H", "HEAD_TO_HEAD"
+            - "H2H", "HEAD_TO_HEAD", "HEAD TO HEAD" (requires opponent)
         """
         import pandas as pd
 
-        window_map = {"L5": 5, "L10": 10, "L15": 15}
-
-        # Normalize stat names from Base44
+        # ---------- normalize stat ----------
         raw_stat = (stat or "").strip().lower()
-        if raw_stat in ("pts+reb+ast", "pts_reb_ast", "pra"):
-            stat = "pra"
-        elif raw_stat in ("pts+reb", "pts_reb", "pr"):
-            stat = "pr"
-        elif raw_stat in ("pts+ast", "pts_ast", "pa"):
-            stat = "pa"
-        elif raw_stat in ("reb+ast", "ast+reb", "reb_ast", "ra"):
-            stat = "ra"
-        elif raw_stat in ("blocks", "blk", "bks"):
-            stat = "blk"
-        elif raw_stat in ("steals", "stl", "stls"):
-            stat = "stl"
-        else:
-            stat = raw_stat or "pts"
+        stat_key = raw_stat.replace(" ", "")  # kill spaces so "pts+reb" works
 
-        # Normalize window and filters
+        if stat_key in ("pts", "point", "points"):
+            stat = "pts"
+        elif stat_key in ("reb", "rebs", "rebound", "rebounds"):
+            stat = "reb"
+        elif stat_key in ("ast", "assist", "assists"):
+            stat = "ast"
+        elif stat_key in ("3pm", "3p", "3ptm", "fg3m", "threes"):
+            stat = "3pm"
+        elif stat_key in ("ptsrebast", "pts+reb+ast", "pra"):
+            stat = "pra"
+        elif stat_key in ("ptsreb", "pts+reb", "pr"):
+            stat = "pr"
+        elif stat_key in ("rebast", "reb+ast", "ra"):
+            stat = "ra"
+        elif stat_key in ("ptsast", "pts+ast", "pa"):
+            stat = "pa"
+        elif stat_key in ("stl", "steal", "steals"):
+            stat = "stl"
+        elif stat_key in ("blk", "block", "blocks"):
+            stat = "blk"
+        else:
+            # default to points if something weird comes through
+            stat = "pts"
+
+        window_map = {"L5": 5, "L10": 10, "L15": 15}
         window_key = (window or "").strip().upper().replace(" ", "_")
+
         season_filter = (season_filter or "all").lower()
         result_filter = (result_filter or "all").lower()
 
-        # 1) Pull logs – always get enough history, then filter
+        # ---------- 1) choose which logs to pull ----------
         if window_key in window_map:
-            # For L5/L10/L15 we fetch multi-season history, then filter & trim
-            logs = self._get_player_gamelog_multi_season(
-                player_id=player_id,
-                max_games=None,
-                num_seasons=5,
-            )
+            base_n = window_map[window_key]
+
+            if season_filter in ("playoffs", "regular") or result_filter in (
+                "wins",
+                "win",
+                "w",
+                "losses",
+                "loss",
+                "l",
+            ):
+                # need a bigger pool because we’ll filter later
+                logs = self._get_player_gamelog_multi_season(
+                    player_id=player_id,
+                    max_games=None,
+                    num_seasons=5,
+                )
+            else:
+                # simple “last N games overall”
+                logs = self._get_player_gamelog_multi_season(
+                    player_id=player_id,
+                    max_games=base_n,
+                    num_seasons=3,
+                )
+
         elif window_key in ("THIS_SEASON", "SEASON"):
             logs = self._get_player_gamelog_for_season(
                 player_id=player_id,
                 season_start_offset=0,
             )
+
         elif window_key in ("LAST_SEASON", "PREV_SEASON"):
             logs = self._get_player_gamelog_for_season(
                 player_id=player_id,
                 season_start_offset=1,
             )
-        else:
-            # H2H / custom / unknown window: pull multi-season history
-            logs = self._get_player_gamelog_multi_season(
+
+        elif window_key in ("H2H", "HEAD_TO_HEAD"):
+            base_logs = self._get_player_gamelog_multi_season(
                 player_id=player_id,
                 max_games=None,
                 num_seasons=5,
             )
+            if opponent:
+                logs = self._filter_logs_vs_opponent(base_logs, opponent)
+            else:
+                logs = pd.DataFrame()
+        else:
+            logs = pd.DataFrame()
 
-        if logs.empty:
-            return {
-                "player": {"player_id": player_id},
-                "chart": {"games": []},
-                "summary": {"games": 0},
-                "context": {
-                    "stat": stat,
-                    "stat_label": stat.upper(),
-                    "window": window,
-                    "window_label": "No data",
-                    "season_filter": season_filter,
-                    "result_filter": result_filter,
-                },
-            }
-
-        # 2) Season filter (Regular / Playoffs / All)
-        if "SEASON_TYPE" in logs.columns:
+        # ---------- 2) apply season filter ----------
+        if not logs.empty and "SEASON_TYPE" in logs.columns:
             if season_filter == "regular":
                 logs = logs[logs["SEASON_TYPE"] == "Regular Season"].copy()
             elif season_filter == "playoffs":
                 logs = logs[logs["SEASON_TYPE"] == "Playoffs"].copy()
 
-        # 3) Win/Loss filter
+        # ---------- 3) apply win/loss filter ----------
         if not logs.empty and "WL" in logs.columns:
-            wl_series = logs["WL"].astype(str).str.upper()
             if result_filter in ("wins", "win", "w"):
-                logs = logs[wl_series.str.startswith("W")].copy()
+                wl = logs["WL"].astype(str).str.upper()
+                logs = logs[wl.str.startswith("W")].copy()
             elif result_filter in ("losses", "loss", "l"):
-                logs = logs[wl_series.str.startswith("L")].copy()
+                wl = logs["WL"].astype(str).str.upper()
+                logs = logs[wl.str.startswith("L")].copy()
 
-        # 4) H2H / opponent filter (works with ANY window)
-        if opponent:
-            logs = self._filter_logs_vs_opponent(logs, opponent)
-
-        if logs.empty:
-            return {
-                "player": {"player_id": player_id},
-                "chart": {"games": []},
-                "summary": {"games": 0},
-                "context": {
-                    "stat": stat,
-                    "stat_label": stat.upper(),
-                    "window": window,
-                    "window_label": "No data",
-                    "season_filter": season_filter,
-                    "result_filter": result_filter,
-                },
-            }
-
-        # 5) After all filters, apply L5/L10/L15 trim
-        if window_key in window_map:
+        # ---------- 4) trim back to L5/L10/L15 after filters ----------
+        if not logs.empty and window_key in window_map:
             logs = logs.sort_values("GAME_DATE_DT", ascending=False)
             logs = logs.head(window_map[window_key]).reset_index(drop=True)
 
@@ -765,14 +779,14 @@ class NBABettingStatsAPI:
                 },
             }
 
-        # 6) Compute the stat value per game
+        # ---------- 5) compute stat values ----------
         def calc_value(row):
             pts = row.get("PTS", 0)
             reb = row.get("REB", 0)
             ast = row.get("AST", 0)
             threes = row.get("FG3M", 0)
-            blk = row.get("BLK", 0)
             stl = row.get("STL", 0)
+            blk = row.get("BLK", 0)
 
             if stat == "pts":
                 return pts
@@ -782,18 +796,18 @@ class NBABettingStatsAPI:
                 return ast
             if stat == "3pm":
                 return threes
+            if stat == "stl":
+                return stl
+            if stat == "blk":
+                return blk
             if stat == "pra":
                 return pts + reb + ast
             if stat == "pr":
                 return pts + reb
-            if stat == "pa":
-                return pts + ast
             if stat == "ra":
                 return reb + ast
-            if stat == "blk":
-                return blk
-            if stat == "stl":
-                return stl
+            if stat == "pa":
+                return pts + ast
 
             # fallback
             return pts
@@ -813,7 +827,7 @@ class NBABettingStatsAPI:
             "hit_rate": None,
         }
 
-        # 7) Build chart games
+        # ---------- 6) build chart data ----------
         chart_games = []
         for _, row in logs.iterrows():
             opp_raw = row.get("MATCHUP", "")
@@ -843,15 +857,17 @@ class NBABettingStatsAPI:
                     game_id = row[key]
                     break
 
-            chart_games.append({
-                "game_id": str(game_id) if game_id is not None else None,
-                "date": row["GAME_DATE_DT"].strftime("%Y-%m-%d"),
-                "opponent": opp,
-                "line": None,
-                "value": float(row["VALUE"]),
-                "result": None,
-                "game_result": game_result,
-            })
+            chart_games.append(
+                {
+                    "game_id": str(game_id) if game_id is not None else None,
+                    "date": row["GAME_DATE_DT"].strftime("%Y-%m-%d"),
+                    "opponent": opp,
+                    "line": None,
+                    "value": float(row["VALUE"]),
+                    "result": None,
+                    "game_result": game_result,
+                }
+            )
 
         player_info = self.get_player_by_id(player_id) or {
             "player_id": player_id,
@@ -869,10 +885,10 @@ class NBABettingStatsAPI:
             "3pm": "3-Pointers Made",
             "pra": "Pts+Reb+Ast",
             "pr": "Pts+Reb",
-            "pa": "Pts+Ast",
             "ra": "Reb+Ast",
-            "blk": "Blocks",
+            "pa": "Pts+Ast",
             "stl": "Steals",
+            "blk": "Blocks",
         }
 
         window_labels = {
