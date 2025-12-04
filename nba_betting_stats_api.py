@@ -510,38 +510,41 @@ class NBABettingStatsAPI:
     def _get_player_gamelog_multi_season(self, player_id: int, max_games: int,
                                          num_seasons: int = 3):
         """
-        Fetch up to max_games regular season games for a player,
-        going backwards across multiple seasons using nba_api.
+        Fetch up to max_games (Regular Season + Playoffs) across multiple seasons.
         """
-        from nba_api.stats.endpoints import playergamelog
-        import pandas as pd
-
         all_logs = []
 
         for season in self._get_season_strings(num_seasons=num_seasons):
-            try:
-                gl = playergamelog.PlayerGameLog(
-                    player_id=player_id,
-                    season=season,
-                    season_type_all_star="Regular Season"
-                )
-                df = gl.get_data_frames()[0]
-                if not df.empty:
-                    all_logs.append(df)
-            except Exception as e:
-                print(f"⚠️ Failed to load game log for {player_id} season {season}: {e}")
-                continue
+            season_frames = []
 
-            # Stop early if we already have enough games
-            if sum(len(df) for df in all_logs) >= max_games:
+            for season_type in ["Regular Season", "Playoffs"]:
+                try:
+                    gl = playergamelog.PlayerGameLog(
+                        player_id=player_id,
+                        season=season,
+                        season_type_all_star=season_type
+                    )
+                    df = gl.get_data_frames()[0]
+                    if not df.empty:
+                        df["SEASON_TYPE"] = season_type
+                        season_frames.append(df)
+                except Exception as e:
+                    print(f"⚠️ Failed {season} {season_type} for {player_id}: {e}")
+
+            # If this season returned anything, merge both RS + Playoffs
+            if season_frames:
+                combined = pd.concat(season_frames, ignore_index=True)
+                all_logs.append(combined)
+
+            # stop early if enough games accumulated
+            total = sum(len(x) for x in all_logs)
+            if total >= max_games:
                 break
 
         if not all_logs:
             return pd.DataFrame()
 
         combined = pd.concat(all_logs, ignore_index=True)
-
-        # Sort newest → oldest and keep the last max_games
         combined["GAME_DATE_DT"] = pd.to_datetime(combined["GAME_DATE"])
         combined = combined.sort_values("GAME_DATE_DT", ascending=False)
 
@@ -557,27 +560,36 @@ class NBABettingStatsAPI:
 
     def _get_player_gamelog_for_season(self, player_id: int, season_start_offset: int = 0):
         """
-        Get *all* regular season games for a single season.
-        offset=0 -> this season, offset=1 -> last season, etc.
+        Get all games in a season (Regular Season + Playoffs).
         """
         season = self._get_season_string_for_offset(offset=season_start_offset)
 
-        try:
-            gl = playergamelog.PlayerGameLog(
-                player_id=player_id,
-                season=season,
-                season_type_all_star="Regular Season",
-            )
-            df = gl.get_data_frames()[0]
-            if df.empty:
-                return df
+        frames = []
 
-            df["GAME_DATE_DT"] = pd.to_datetime(df["GAME_DATE"])
-            df = df.sort_values("GAME_DATE_DT", ascending=False)
-            return df.reset_index(drop=True)
-        except Exception as e:
-            print(f"⚠️ Failed to load game log for season {season}: {e}")
+        for season_type in ["Regular Season", "Playoffs"]:
+            try:
+                gl = playergamelog.PlayerGameLog(
+                    player_id=player_id,
+                    season=season,
+                    season_type_all_star=season_type,
+                )
+                df = gl.get_data_frames()[0]
+                if not df.empty:
+                    df["SEASON_TYPE"] = season_type
+                    frames.append(df)
+            except Exception as e:
+                print(f"⚠️ Failed to load {season_type} logs for {player_id} season {season}: {e}")
+
+        if not frames:
             return pd.DataFrame()
+
+    combined = pd.concat(frames, ignore_index=True)
+
+    combined["GAME_DATE_DT"] = pd.to_datetime(combined["GAME_DATE"])
+    combined = combined.sort_values("GAME_DATE_DT", ascending=False)
+
+    return combined.reset_index(drop=True)
+
 
     def _filter_logs_vs_opponent(self, logs: pd.DataFrame, opponent_abbrev: str) -> pd.DataFrame:
         """
