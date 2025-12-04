@@ -583,12 +583,12 @@ class NBABettingStatsAPI:
         if not frames:
             return pd.DataFrame()
 
-    combined = pd.concat(frames, ignore_index=True)
+        combined = pd.concat(frames, ignore_index=True)
 
-    combined["GAME_DATE_DT"] = pd.to_datetime(combined["GAME_DATE"])
-    combined = combined.sort_values("GAME_DATE_DT", ascending=False)
+        combined["GAME_DATE_DT"] = pd.to_datetime(combined["GAME_DATE"])
+        combined = combined.sort_values("GAME_DATE_DT", ascending=False)
 
-    return combined.reset_index(drop=True)
+        return combined.reset_index(drop=True)
 
 
     def _filter_logs_vs_opponent(self, logs: pd.DataFrame, opponent_abbrev: str) -> pd.DataFrame:
