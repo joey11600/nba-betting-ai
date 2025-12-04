@@ -311,17 +311,15 @@ def get_player_vs_opponent():
 # PLAYER RESEARCH ENDPOINTS
 # ======================
 
-@app.route('/api/research/player', methods=['GET'])
+@app.route("/api/research/player")
 def research_player():
     try:
-        print("DEBUG /api/research/player args:", dict(request.args))
-
-        player_id = int(request.args.get('player_id'))
-        stat = request.args.get('stat', 'pts')
-        window = request.args.get('window', 'L15')
-        opponent = request.args.get('opponent')
-
-        season_filter = request.args.get('season_filter', 'all')
+        player_id = int(request.args.get("player_id"))
+        stat = request.args.get("stat", "pts")
+        window = request.args.get("window", "L10")
+        opponent = request.args.get("opponent", None)
+        season_filter = request.args.get("season_filter", "all")
+        result_filter = request.args.get("result_filter", "all")
 
         data = api.get_player_research(
             player_id=player_id,
@@ -332,9 +330,12 @@ def research_player():
             result_filter=result_filter,
         )
 
+        return jsonify({ "success": True, **data })
+
+    except Exception as e:
         return jsonify({
-            "success": True,
-            **data,
+            "success": False,
+            "error": str(e),
         })
 
     except Exception as e:
