@@ -625,79 +625,128 @@ class NBABettingStatsAPI:
         window: str,
         opponent: str = None,
         season_filter: str = "all",
+        result_filter: str = "all",
     ):
         """
         Return last-N games or season / H2H slice for a player.
 
-        stat: one of ["pts", "reb", "ast", "3pm", "pra", "pr", "ra"]
+        stat: supports:
+            - "pts", "reb", "ast", "3pm"
+            - "pts+reb+ast", "pra"
+            - "pts+reb", "pr"
+            - "pts+ast", "pa"
+            - "reb+ast", "ast+reb", "ra"
+            - "blocks", "blk"
+            - "steals", "stl"
         window:
             - "L5", "L10", "L15"
             - "THIS_SEASON" / "THIS SEASON"
             - "LAST_SEASON" / "LAST SEASON"
-            - "H2H", "HEAD_TO_HEAD", "HEAD TO HEAD" (requires opponent)
+            - "H2H", "HEAD_TO_HEAD"
         """
         import pandas as pd
 
         window_map = {"L5": 5, "L10": 10, "L15": 15}
 
-        stat = stat.lower()
+        # Normalize stat names from Base44
+        raw_stat = (stat or "").strip().lower()
+        if raw_stat in ("pts+reb+ast", "pts_reb_ast", "pra"):
+            stat = "pra"
+        elif raw_stat in ("pts+reb", "pts_reb", "pr"):
+            stat = "pr"
+        elif raw_stat in ("pts+ast", "pts_ast", "pa"):
+            stat = "pa"
+        elif raw_stat in ("reb+ast", "ast+reb", "reb_ast", "ra"):
+            stat = "ra"
+        elif raw_stat in ("blocks", "blk", "bks"):
+            stat = "blk"
+        elif raw_stat in ("steals", "stl", "stls"):
+            stat = "stl"
+        else:
+            stat = raw_stat or "pts"
+
+        # Normalize window and filters
         window_key = (window or "").strip().upper().replace(" ", "_")
         season_filter = (season_filter or "all").lower()
+        result_filter = (result_filter or "all").lower()
 
-        # 1) Decide which logs to pull
+        # 1) Pull logs – always get enough history, then filter
         if window_key in window_map:
-            base_n = window_map[window_key]
-
-            if season_filter in ("playoffs", "regular"):
-                # For filtered windows, don't pre-cut; fetch several seasons
-                logs = self._get_player_gamelog_multi_season(
-                    player_id=player_id,
-                    max_games=None,     # <-- NO early cap
-                    num_seasons=5,      # go back up to 5 seasons
-                )
-            else:
-                # Normal case: just need last N overall games
-                logs = self._get_player_gamelog_multi_season(
-                    player_id=player_id,
-                    max_games=base_n,   # cap at N since we won't filter later
-                    num_seasons=3,
-                )
-
+            # For L5/L10/L15 we fetch multi-season history, then filter & trim
+            logs = self._get_player_gamelog_multi_season(
+                player_id=player_id,
+                max_games=None,
+                num_seasons=5,
+            )
         elif window_key in ("THIS_SEASON", "SEASON"):
             logs = self._get_player_gamelog_for_season(
                 player_id=player_id,
                 season_start_offset=0,
             )
-
         elif window_key in ("LAST_SEASON", "PREV_SEASON"):
             logs = self._get_player_gamelog_for_season(
                 player_id=player_id,
                 season_start_offset=1,
             )
-
-        elif window_key in ("H2H", "HEAD_TO_HEAD"):
-            base_logs = self._get_player_gamelog_multi_season(
+        else:
+            # H2H / custom / unknown window: pull multi-season history
+            logs = self._get_player_gamelog_multi_season(
                 player_id=player_id,
                 max_games=None,
                 num_seasons=5,
             )
-            if opponent:
-                logs = self._filter_logs_vs_opponent(base_logs, opponent)
-            else:
-                logs = pd.DataFrame()
-        else:
-            logs = pd.DataFrame()
 
-        # Apply season filter if SEASON_TYPE is available
-        if not logs.empty and "SEASON_TYPE" in logs.columns:
+        if logs.empty:
+            return {
+                "player": {"player_id": player_id},
+                "chart": {"games": []},
+                "summary": {"games": 0},
+                "context": {
+                    "stat": stat,
+                    "stat_label": stat.upper(),
+                    "window": window,
+                    "window_label": "No data",
+                    "season_filter": season_filter,
+                    "result_filter": result_filter,
+                },
+            }
+
+        # 2) Season filter (Regular / Playoffs / All)
+        if "SEASON_TYPE" in logs.columns:
             if season_filter == "regular":
                 logs = logs[logs["SEASON_TYPE"] == "Regular Season"].copy()
             elif season_filter == "playoffs":
                 logs = logs[logs["SEASON_TYPE"] == "Playoffs"].copy()
-            # "all" keeps both
 
-        # After filtering, trim back down to L5/L10/L15 if applicable
-        if not logs.empty and window_key in window_map:
+        # 3) Win/Loss filter
+        if not logs.empty and "WL" in logs.columns:
+            wl_series = logs["WL"].astype(str).str.upper()
+            if result_filter in ("wins", "win", "w"):
+                logs = logs[wl_series.str.startswith("W")].copy()
+            elif result_filter in ("losses", "loss", "l"):
+                logs = logs[wl_series.str.startswith("L")].copy()
+
+        # 4) H2H / opponent filter (works with ANY window)
+        if opponent:
+            logs = self._filter_logs_vs_opponent(logs, opponent)
+
+        if logs.empty:
+            return {
+                "player": {"player_id": player_id},
+                "chart": {"games": []},
+                "summary": {"games": 0},
+                "context": {
+                    "stat": stat,
+                    "stat_label": stat.upper(),
+                    "window": window,
+                    "window_label": "No data",
+                    "season_filter": season_filter,
+                    "result_filter": result_filter,
+                },
+            }
+
+        # 5) After all filters, apply L5/L10/L15 trim
+        if window_key in window_map:
             logs = logs.sort_values("GAME_DATE_DT", ascending=False)
             logs = logs.head(window_map[window_key]).reset_index(drop=True)
 
@@ -712,15 +761,18 @@ class NBABettingStatsAPI:
                     "window": window,
                     "window_label": "No data",
                     "season_filter": season_filter,
+                    "result_filter": result_filter,
                 },
             }
 
-        # 2) Compute the stat value per game
+        # 6) Compute the stat value per game
         def calc_value(row):
             pts = row.get("PTS", 0)
             reb = row.get("REB", 0)
             ast = row.get("AST", 0)
             threes = row.get("FG3M", 0)
+            blk = row.get("BLK", 0)
+            stl = row.get("STL", 0)
 
             if stat == "pts":
                 return pts
@@ -734,8 +786,16 @@ class NBABettingStatsAPI:
                 return pts + reb + ast
             if stat == "pr":
                 return pts + reb
+            if stat == "pa":
+                return pts + ast
             if stat == "ra":
                 return reb + ast
+            if stat == "blk":
+                return blk
+            if stat == "stl":
+                return stl
+
+            # fallback
             return pts
 
         logs["VALUE"] = logs.apply(calc_value, axis=1)
@@ -753,6 +813,7 @@ class NBABettingStatsAPI:
             "hit_rate": None,
         }
 
+        # 7) Build chart games
         chart_games = []
         for _, row in logs.iterrows():
             opp_raw = row.get("MATCHUP", "")
@@ -808,7 +869,10 @@ class NBABettingStatsAPI:
             "3pm": "3-Pointers Made",
             "pra": "Pts+Reb+Ast",
             "pr": "Pts+Reb",
+            "pa": "Pts+Ast",
             "ra": "Reb+Ast",
+            "blk": "Blocks",
+            "stl": "Steals",
         }
 
         window_labels = {
@@ -831,6 +895,7 @@ class NBABettingStatsAPI:
                 "window": window,
                 "window_label": window_labels.get(label_key, window or "Custom"),
                 "season_filter": season_filter,
+                "result_filter": result_filter,
             },
         }
 
