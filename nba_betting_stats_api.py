@@ -547,28 +547,103 @@ class NBABettingStatsAPI:
 
         return combined.head(max_games).reset_index(drop=True)
 
-    def get_player_research(self, player_id: int, stat: str, window: str):
+        def _get_season_string_for_offset(self, offset: int = 0) -> str:
         """
-        Return last-N games for a player across multiple seasons using nba_api gamelogs.
+        offset=0  -> current season
+        offset=1  -> last season
+        """
+        start_year = self._get_current_season_start_year() - offset
+        return f"{start_year}-{str(start_year + 1)[-2:]}"
+
+    def _get_player_gamelog_for_season(self, player_id: int, season_start_offset: int = 0):
+        """
+        Get *all* regular season games for a single season.
+        offset=0 -> this season, offset=1 -> last season, etc.
+        """
+        season = self._get_season_string_for_offset(offset=season_start_offset)
+
+        try:
+            gl = playergamelog.PlayerGameLog(
+                player_id=player_id,
+                season=season,
+                season_type_all_star="Regular Season",
+            )
+            df = gl.get_data_frames()[0]
+            if df.empty:
+                return df
+
+            df["GAME_DATE_DT"] = pd.to_datetime(df["GAME_DATE"])
+            df = df.sort_values("GAME_DATE_DT", ascending=False)
+            return df.reset_index(drop=True)
+        except Exception as e:
+            print(f"⚠️ Failed to load game log for season {season}: {e}")
+            return pd.DataFrame()
+
+    def _filter_logs_vs_opponent(self, logs: pd.DataFrame, opponent_abbrev: str) -> pd.DataFrame:
+        """
+        Filter gamelog rows where the opponent matches the given team abbreviation (e.g. 'LAL').
+        """
+        if logs.empty:
+            return logs
+
+        opp = opponent_abbrev.strip().upper()
+        if not opp:
+            return logs
+
+        # MATCHUP strings look like "LAL vs. BOS" or "LAL @ BOS"
+        mask = logs["MATCHUP"].str.contains(rf"\b{opp}\b", na=False)
+        filtered = logs[mask].copy()
+        return filtered.reset_index(drop=True)
+
+
+    def get_player_research(self, player_id: int, stat: str, window: str, opponent: str = None):
+        """
+        Return last-N games or season / H2H slice for a player.
 
         stat: one of ["pts", "reb", "ast", "3pm", "pra", "pr", "ra"]
-        window: "L5", "L10", "L15" (for now)
+        window:
+            - "L5", "L10", "L15"
+            - "THIS_SEASON" / "THIS SEASON"
+            - "LAST_SEASON" / "LAST SEASON"
+            - "H2H", "HEAD_TO_HEAD", "HEAD TO HEAD" (requires opponent)
         """
         import pandas as pd
 
         window_map = {"L5": 5, "L10": 10, "L15": 15}
 
         stat = stat.lower()
-        window = window.upper()
+        # Normalize window: strip, upper, replace spaces with underscores
+        window_key = (window or "").strip().upper().replace(" ", "_")
 
-        # 1) Get the right number of games using multi-season logs
-        if window in window_map:
-            num_games = window_map[window]
+        # 1) Decide which logs to pull
+        if window_key in window_map:
+            num_games = window_map[window_key]
             logs = self._get_player_gamelog_multi_season(
                 player_id=player_id,
                 max_games=num_games,
                 num_seasons=3,
             )
+        elif window_key in ("THIS_SEASON", "SEASON"):
+            logs = self._get_player_gamelog_for_season(
+                player_id=player_id,
+                season_start_offset=0,
+            )
+        elif window_key in ("LAST_SEASON", "PREV_SEASON"):
+            logs = self._get_player_gamelog_for_season(
+                player_id=player_id,
+                season_start_offset=1,
+            )
+        elif window_key in ("H2H", "HEAD_TO_HEAD"):
+            # H2H across last 3 seasons vs a specific opponent
+            base_logs = self._get_player_gamelog_multi_season(
+                player_id=player_id,
+                max_games=200,
+                num_seasons=3,
+            )
+            if opponent:
+                logs = self._filter_logs_vs_opponent(base_logs, opponent)
+            else:
+                logs = pd.DataFrame()  # no opponent supplied
         else:
             logs = pd.DataFrame()
 
@@ -581,8 +656,8 @@ class NBABettingStatsAPI:
                     "stat": stat,
                     "stat_label": stat.upper(),
                     "window": window,
-                    "window_label": "No data"
-                }
+                    "window_label": "No data",
+                },
             }
 
         # 2) Compute the stat value per game
@@ -606,7 +681,6 @@ class NBABettingStatsAPI:
                 return pts + reb
             if stat == "ra":
                 return reb + ast
-            # default to points
             return pts
 
         logs["VALUE"] = logs.apply(calc_value, axis=1)
@@ -614,7 +688,6 @@ class NBABettingStatsAPI:
         values = logs["VALUE"].tolist()
         s = pd.Series(values)
 
-        # 3) Summary stats over those games
         summary = {
             "games": int(len(values)),
             "avg": float(round(s.mean(), 1)),
@@ -622,13 +695,11 @@ class NBABettingStatsAPI:
             "max": float(s.max()),
             "median": float(s.median()),
             "std_dev": float(round(s.std(ddof=0), 2)),
-            "hit_rate": None,  # you can add line-based hit-rate later
+            "hit_rate": None,
         }
 
-        # 4) Build chart data (one entry per game)
         chart_games = []
         for _, row in logs.iterrows():
-            # Parse opponent nicely
             opp_raw = row.get("MATCHUP", "")
             if " vs. " in opp_raw:
                 parts = opp_raw.split(" vs. ")
@@ -642,8 +713,7 @@ class NBABettingStatsAPI:
             else:
                 opp = opp_raw
 
-            # Game result (team win/loss)
-            wl_raw = str(row.get("WL", "")).upper()   # usually "W" or "L"
+            wl_raw = str(row.get("WL", "")).upper()
             if wl_raw.startswith("W"):
                 game_result = "win"
             elif wl_raw.startswith("L"):
@@ -651,7 +721,6 @@ class NBABettingStatsAPI:
             else:
                 game_result = None
 
-            # Game ID – handle both Game_ID and GAME_ID just in case
             game_id = None
             for key in ("Game_ID", "GAME_ID", "game_id"):
                 if key in row.index:
@@ -662,13 +731,12 @@ class NBABettingStatsAPI:
                 "game_id": str(game_id) if game_id is not None else None,
                 "date": row["GAME_DATE_DT"].strftime("%Y-%m-%d"),
                 "opponent": opp,
-                "line": None,                 # still no betting line
+                "line": None,
                 "value": float(row["VALUE"]),
-                "result": None,               # reserved for future over/under result
-                "game_result": game_result,   # W/L for the team
+                "result": None,
+                "game_result": game_result,
             })
 
-        # 5) Player info
         player_info = self.get_player_by_id(player_id) or {
             "player_id": player_id,
             "full_name": "",
@@ -688,6 +756,17 @@ class NBABettingStatsAPI:
             "ra": "Reb+Ast",
         }
 
+        # Nice label for the UI
+        window_labels = {
+            "L5": "Last 5 games",
+            "L10": "Last 10 games",
+            "L15": "Last 15 games",
+            "THIS_SEASON": "This season",
+            "LAST_SEASON": "Last season",
+            "H2H": f"Head to head vs {opponent}" if opponent else "Head to head",
+        }
+        label_key = window_key if window_key in window_labels else window_key
+
         return {
             "player": player_info,
             "chart": {"games": chart_games},
@@ -696,10 +775,10 @@ class NBABettingStatsAPI:
                 "stat": stat,
                 "stat_label": stat_labels.get(stat, stat.upper()),
                 "window": window,
-                "window_label": f"Last {window_map.get(window, len(values))} games",
+                "window_label": window_labels.get(label_key, window or "Custom"),
             },
         }
-    
+
     # ======================
     # ANALYTICS
     # ======================
