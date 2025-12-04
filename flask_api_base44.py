@@ -319,7 +319,9 @@ def research_player():
         window = request.args.get("window", "L10")
         opponent = request.args.get("opponent", None)
         season_filter = request.args.get("season_filter", "all")
-        result_filter = request.args.get("result_filter", "all")
+        
+        # Accept BOTH parameter names for compatibility
+        game_result = request.args.get("game_result") or request.args.get("result_filter", "any")
 
         data = api.get_player_research(
             player_id=player_id,
@@ -327,16 +329,10 @@ def research_player():
             window=window,
             opponent=opponent,
             season_filter=season_filter,
-            result_filter=result_filter,
+            game_result=game_result,  # Use game_result
         )
 
-        return jsonify({ "success": True, **data })
-
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e),
-        })
+        return jsonify({"success": True, **data})
 
     except Exception as e:
         print("Error in /api/research/player:", e)
