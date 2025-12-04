@@ -117,7 +117,7 @@ def create_bet():
 
 
 @app.route('/api/bets/<int:bet_id>/props', methods=['POST'])
-def add_prop():
+def add_prop(bet_id):
     """
     Add a prop to a bet
     POST /api/bets/1/props
@@ -314,18 +314,21 @@ def get_player_vs_opponent():
 @app.route('/api/research/player', methods=['GET'])
 def research_player():
     try:
+        print("DEBUG /api/research/player args:", dict(request.args))
+
         player_id = int(request.args.get('player_id'))
         stat = request.args.get('stat', 'pts')
         window = request.args.get('window', 'L15')
-        opponent = request.args.get('opponent') 
+        opponent = request.args.get('opponent')
 
         season_filter = request.args.get('season_filter', 'all')
-        
+
         data = api.get_player_research(
             player_id=player_id,
             stat=stat,
             window=window,
             opponent=opponent,
+            season_filter=season_filter,  # <- this was missing
         )
 
         return jsonify({
@@ -335,12 +338,12 @@ def research_player():
 
     except Exception as e:
         print("Error in /api/research/player:", e)
-        import traceback
         return jsonify({
             "success": False,
             "error": str(e),
             "traceback": traceback.format_exc(),
         }), 500
+
 
 # ======================
 # HEALTH CHECK
