@@ -313,27 +313,24 @@ def get_player_vs_opponent():
 
 @app.route('/api/research/player', methods=['GET'])
 def research_player():
-    """
-    Player research endpoint for Base44.
-
-    Example:
-    GET /api/research/player?player_id=2544&stat=pts&window=L15
-    """
     try:
         player_id = int(request.args.get('player_id'))
-        stat = request.args.get('stat', 'pts')      # pts, reb, ast, 3pm, pra, pr, ra
-        window = request.args.get('window', 'L15')  # L5, L10, L15
+        stat = request.args.get('stat', 'pts')
+        window = request.args.get('window', 'L15')
+        opponent = request.args.get('opponent')  # <-- new
 
         data = api.get_player_research(
             player_id=player_id,
             stat=stat,
             window=window,
+            opponent=opponent,
         )
 
         return jsonify({
             "success": True,
             **data,
         })
+
     except Exception as e:
         print("Error in /api/research/player:", e)
         import traceback
