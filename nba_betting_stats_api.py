@@ -507,14 +507,25 @@ class NBABettingStatsAPI:
             seasons.append(f"{y}-{str(y + 1)[-2:]}")
         return seasons
 
-    def _get_player_gamelog_multi_season(self, player_id: int, max_games: int,
-                                         num_seasons: int = 3):
+    def _get_player_gamelog_multi_season(
+        self,
+        player_id: int,
+        max_games: int | None,
+        num_seasons: int = 3,
+    ):
         """
-        Fetch up to max_games (Regular Season + Playoffs) across multiple seasons.
+        Fetch games (Regular Season + Playoffs) across multiple seasons.
+
+        We fetch FULL seasons first, then sort by date and (optionally)
+        trim to max_games at the very end. That way later filters like
+        SEASON_TYPE ('Playoffs' / 'Regular Season') still have access
+        to older games.
         """
         all_logs = []
 
-        for season in self._get_season_strings(num_seasons=num_seasons):
+        seasons = self._get_season_strings(num_seasons=num_seasons)
+
+        for season in seasons:
             season_frames = []
 
             for season_type in ["Regular Season", "Playoffs"]:
@@ -522,7 +533,7 @@ class NBABettingStatsAPI:
                     gl = playergamelog.PlayerGameLog(
                         player_id=player_id,
                         season=season,
-                        season_type_all_star=season_type
+                        season_type_all_star=season_type,
                     )
                     df = gl.get_data_frames()[0]
                     if not df.empty:
@@ -531,15 +542,9 @@ class NBABettingStatsAPI:
                 except Exception as e:
                     print(f"⚠️ Failed {season} {season_type} for {player_id}: {e}")
 
-            # If this season returned anything, merge both RS + Playoffs
             if season_frames:
-                combined = pd.concat(season_frames, ignore_index=True)
-                all_logs.append(combined)
-
-            # stop early if enough games accumulated
-            total = sum(len(x) for x in all_logs)
-            if total >= max_games:
-                break
+                season_df = pd.concat(season_frames, ignore_index=True)
+                all_logs.append(season_df)
 
         if not all_logs:
             return pd.DataFrame()
@@ -548,7 +553,12 @@ class NBABettingStatsAPI:
         combined["GAME_DATE_DT"] = pd.to_datetime(combined["GAME_DATE"])
         combined = combined.sort_values("GAME_DATE_DT", ascending=False)
 
-        return combined.head(max_games).reset_index(drop=True)
+        # Optional cap AFTER all seasons are combined
+        if max_games is not None:
+            combined = combined.head(max_games)
+
+        return combined.reset_index(drop=True)
+
 
     def _get_season_string_for_offset(self, offset: int = 0) -> str:
         """
@@ -638,18 +648,20 @@ class NBABettingStatsAPI:
         if window_key in window_map:
             base_n = window_map[window_key]
 
-            # If we're going to throw away non-Playoff / non-Regular games,
-            # over-fetch so we still have base_n after filtering.
             if season_filter in ("playoffs", "regular"):
-                prefetch_n = base_n * 4  # e.g. ask for 40 to end up with 10
+                # For filtered windows, don't pre-cut; fetch several seasons
+                logs = self._get_player_gamelog_multi_season(
+                    player_id=player_id,
+                    max_games=None,     # <-- NO early cap
+                    num_seasons=5,      # go back up to 5 seasons
+                )
             else:
-                prefetch_n = base_n
-
-            logs = self._get_player_gamelog_multi_season(
-                player_id=player_id,
-                max_games=prefetch_n,
-                num_seasons=3,
-            )
+                # Normal case: just need last N overall games
+                logs = self._get_player_gamelog_multi_season(
+                    player_id=player_id,
+                    max_games=base_n,   # cap at N since we won't filter later
+                    num_seasons=3,
+                )
 
         elif window_key in ("THIS_SEASON", "SEASON"):
             logs = self._get_player_gamelog_for_season(
@@ -666,8 +678,8 @@ class NBABettingStatsAPI:
         elif window_key in ("H2H", "HEAD_TO_HEAD"):
             base_logs = self._get_player_gamelog_multi_season(
                 player_id=player_id,
-                max_games=200,
-                num_seasons=3,
+                max_games=None,
+                num_seasons=5,
             )
             if opponent:
                 logs = self._filter_logs_vs_opponent(base_logs, opponent)
