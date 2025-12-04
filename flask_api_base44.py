@@ -16,9 +16,9 @@ CORS(app)  # Enable CORS for Base44
 # Initialize API
 api = NBABettingStatsAPI(db_path="nba_betting_tracker.db")
 
-# ======================
+# =======================
 # PLAYER ENDPOINTS
-# ======================
+# =======================
 
 @app.route('/api/players/search', methods=['GET'])
 def search_players():
