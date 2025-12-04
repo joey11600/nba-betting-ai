@@ -614,9 +614,8 @@ class NBABettingStatsAPI:
         stat: str,
         window: str,
         opponent: str = None,
-        season_filter: str = "all",  # new
+        season_filter: str = "all",
     ):
-
         """
         Return last-N games or season / H2H slice for a player.
 
@@ -632,29 +631,39 @@ class NBABettingStatsAPI:
         window_map = {"L5": 5, "L10": 10, "L15": 15}
 
         stat = stat.lower()
-        # Normalize window: strip, upper, replace spaces with underscores
         window_key = (window or "").strip().upper().replace(" ", "_")
+        season_filter = (season_filter or "all").lower()
 
         # 1) Decide which logs to pull
         if window_key in window_map:
-            num_games = window_map[window_key]
+            base_n = window_map[window_key]
+
+            # If we're going to throw away non-Playoff / non-Regular games,
+            # over-fetch so we still have base_n after filtering.
+            if season_filter in ("playoffs", "regular"):
+                prefetch_n = base_n * 4  # e.g. ask for 40 to end up with 10
+            else:
+                prefetch_n = base_n
+
             logs = self._get_player_gamelog_multi_season(
                 player_id=player_id,
-                max_games=num_games,
+                max_games=prefetch_n,
                 num_seasons=3,
             )
+
         elif window_key in ("THIS_SEASON", "SEASON"):
             logs = self._get_player_gamelog_for_season(
                 player_id=player_id,
                 season_start_offset=0,
             )
+
         elif window_key in ("LAST_SEASON", "PREV_SEASON"):
             logs = self._get_player_gamelog_for_season(
                 player_id=player_id,
                 season_start_offset=1,
             )
+
         elif window_key in ("H2H", "HEAD_TO_HEAD"):
-            # H2H across last 3 seasons vs a specific opponent
             base_logs = self._get_player_gamelog_multi_season(
                 player_id=player_id,
                 max_games=200,
@@ -663,19 +672,22 @@ class NBABettingStatsAPI:
             if opponent:
                 logs = self._filter_logs_vs_opponent(base_logs, opponent)
             else:
-                logs = pd.DataFrame()  # no opponent supplied
+                logs = pd.DataFrame()
         else:
             logs = pd.DataFrame()
-            
-        # Apply season filter if SEASON_TYPE is available
-        season_filter = (season_filter or "all").lower()
 
-        if "SEASON_TYPE" in logs.columns:
+        # Apply season filter if SEASON_TYPE is available
+        if not logs.empty and "SEASON_TYPE" in logs.columns:
             if season_filter == "regular":
                 logs = logs[logs["SEASON_TYPE"] == "Regular Season"].copy()
             elif season_filter == "playoffs":
                 logs = logs[logs["SEASON_TYPE"] == "Playoffs"].copy()
             # "all" keeps both
+
+        # After filtering, trim back down to L5/L10/L15 if applicable
+        if not logs.empty and window_key in window_map:
+            logs = logs.sort_values("GAME_DATE_DT", ascending=False)
+            logs = logs.head(window_map[window_key]).reset_index(drop=True)
 
         if logs.empty:
             return {
@@ -687,6 +699,7 @@ class NBABettingStatsAPI:
                     "stat_label": stat.upper(),
                     "window": window,
                     "window_label": "No data",
+                    "season_filter": season_filter,
                 },
             }
 
@@ -786,7 +799,6 @@ class NBABettingStatsAPI:
             "ra": "Reb+Ast",
         }
 
-        # Nice label for the UI
         window_labels = {
             "L5": "Last 5 games",
             "L10": "Last 10 games",
