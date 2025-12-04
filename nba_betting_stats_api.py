@@ -608,7 +608,15 @@ class NBABettingStatsAPI:
         return filtered.reset_index(drop=True)
 
 
-    def get_player_research(self, player_id: int, stat: str, window: str, opponent: str = None):
+    def get_player_research(
+        self,
+        player_id: int,
+        stat: str,
+        window: str,
+        opponent: str = None,
+        season_filter: str = "all",  # new
+    ):
+
         """
         Return last-N games or season / H2H slice for a player.
 
@@ -658,6 +666,16 @@ class NBABettingStatsAPI:
                 logs = pd.DataFrame()  # no opponent supplied
         else:
             logs = pd.DataFrame()
+            
+        # Apply season filter if SEASON_TYPE is available
+        season_filter = (season_filter or "all").lower()
+
+        if "SEASON_TYPE" in logs.columns:
+            if season_filter == "regular":
+                logs = logs[logs["SEASON_TYPE"] == "Regular Season"].copy()
+            elif season_filter == "playoffs":
+                logs = logs[logs["SEASON_TYPE"] == "Playoffs"].copy()
+            # "all" keeps both
 
         if logs.empty:
             return {
@@ -788,6 +806,7 @@ class NBABettingStatsAPI:
                 "stat_label": stat_labels.get(stat, stat.upper()),
                 "window": window,
                 "window_label": window_labels.get(label_key, window or "Custom"),
+                "season_filter": season_filter,
             },
         }
 
