@@ -328,7 +328,8 @@ def research_player():
             stat=stat,
             window=window,
             opponent=opponent,
-            season_filter=season_filter,  # <- this was missing
+            season_filter=season_filter,
+            result_filter=result_filter,
         )
 
         return jsonify({
