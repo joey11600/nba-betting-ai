@@ -849,11 +849,11 @@ class NBABettingStatsAPI:
 
             wl_raw = str(row.get("WL", "")).upper()
             if wl_raw.startswith("W"):
-                game_result = "win"
+                game_wl = "win"  # ← Use different variable name
             elif wl_raw.startswith("L"):
-                game_result = "loss"
+                game_wl = "loss"
             else:
-                game_result = None
+                game_wl = None
 
             game_id = None
             for key in ("Game_ID", "GAME_ID", "game_id"):
@@ -869,7 +869,7 @@ class NBABettingStatsAPI:
                     "line": None,
                     "value": float(row["VALUE"]),
                     "result": None,
-                    "game_result": game_result,
+                    "game_result": game_wl,  # ← Use game_wl here
                 }
             )
 
