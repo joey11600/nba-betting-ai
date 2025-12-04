@@ -636,7 +636,7 @@ class NBABettingStatsAPI:
         window: str,
         opponent: str = None,
         season_filter: str = "all",
-        result_filter: str = "all",
+        game_result: str = "any",
     ):
         """
         Return last-N games or season / H2H slice for a player.
@@ -691,27 +691,22 @@ class NBABettingStatsAPI:
 
         season_filter = (season_filter or "all").strip().lower()
 
-        raw_result = (result_filter or "all").strip().lower()
+        # Normalize game_result parameter
+        raw_result = (game_result or "any").strip().lower()
         if raw_result in ("win", "wins", "w", "won"):
-            result_filter = "wins"
+            game_result = "wins"
         elif raw_result in ("loss", "losses", "l", "lost"):
-            result_filter = "losses"
+            game_result = "losses"
         else:
-            result_filter = "all"
+            game_result = "any"
 
 
         # ---------- 1) choose which logs to pull ----------
         if window_key in window_map:
             base_n = window_map[window_key]
 
-            if season_filter in ("playoffs", "regular") or result_filter in (
-                "wins",
-                "win",
-                "w",
-                "losses",
-                "loss",
-                "l",
-            ):
+            if season_filter in ("playoffs", "regular") or game_result in ("wins", "losses"):
+                
                 # need a bigger pool because we’ll filter later
                 logs = self._get_player_gamelog_multi_season(
                     player_id=player_id,
@@ -762,9 +757,9 @@ class NBABettingStatsAPI:
         if not logs.empty and "WL" in logs.columns:
             wl = logs["WL"].astype(str).str.upper()
 
-            if result_filter == "wins":
+            if game_result == "wins":
                 logs = logs[wl.str.startswith("W")].copy()
-            elif result_filter == "losses":
+            elif game_result == "losses":
                 logs = logs[wl.str.startswith("L")].copy()
 
 
@@ -784,7 +779,7 @@ class NBABettingStatsAPI:
                     "window": window,
                     "window_label": "No data",
                     "season_filter": season_filter,
-                    "result_filter": result_filter,
+                    "game_result": game_result,
                 },
             }
 
@@ -920,7 +915,7 @@ class NBABettingStatsAPI:
                 "window": window,
                 "window_label": window_labels.get(label_key, window or "Custom"),
                 "season_filter": season_filter,
-                "result_filter": result_filter,
+                "game_result": game_result,
             },
         }
 
