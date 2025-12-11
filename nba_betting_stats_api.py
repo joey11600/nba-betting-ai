@@ -12,7 +12,6 @@ from typing import List, Dict, Optional, Tuple
 from nba_api.stats.endpoints import PlayerGameLog
 import time
 import pandas as pd
-from quarter_stats_parser import QuarterStatsParser
 
 try:
     from nba_api.stats.static import players, teams
@@ -669,7 +668,7 @@ class NBABettingStatsAPI:
         opponent: str = None,
         season_filter: str = "all",
         game_result: str = "any",
-        quarter_filter: str = "full_game"
+        quarter: str = None
     ):
         """
         Return last-N games or season / H2H slice for a player.
@@ -907,7 +906,7 @@ class NBABettingStatsAPI:
             )
         
         # Apply quarter filtering if requested
-        if quarter_filter.upper() != 'FULL_GAME':
+        if quarter and quarter.upper() in ['Q1', 'Q2', 'Q3', 'Q4']:
             # Get the season from the logs
             if not logs.empty and "SEASON_ID" in logs.columns:
                 season_id = logs["SEASON_ID"].iloc[0]  # e.g., '22025'
@@ -955,10 +954,10 @@ class NBABettingStatsAPI:
                                 elif stat == "pa":
                                     game['value'] = quarter_stats['PTS'] + quarter_stats['AST']
                                 
-                                game['quarter_filter'] = quarter_filter
+                                game['quarter'] = quarter
                                 updated_count += 1
                     
-                    print(f"✅ Updated {updated_count} games with {quarter_filter} stats")
+                    print(f"✅ Updated {updated_count} games with {quarter} stats")
                     
                     # Recalculate summary with new values
                     values = [g['value'] for g in chart_games]
@@ -1017,7 +1016,7 @@ class NBABettingStatsAPI:
                 "window_label": window_labels.get(label_key, window or "Custom"),
                 "season_filter": season_filter,
                 "game_result": game_result,
-                "quarter_filter": quarter_filter,
+                "quarter": quarter,
             },
         }
 
