@@ -319,6 +319,7 @@ def research_player():
         window = request.args.get("window", "L10")
         opponent = request.args.get("opponent", None)
         season_filter = request.args.get("season_filter", "all")
+        quarter = request.args.get("quarter", None)  # Q1, Q2, Q3, Q4, or None
         
         # Accept BOTH parameter names for compatibility
         game_result = request.args.get("game_result") or request.args.get("result_filter", "any")
@@ -329,7 +330,8 @@ def research_player():
             window=window,
             opponent=opponent,
             season_filter=season_filter,
-            game_result=game_result,  # Use game_result
+            game_result=game_result,
+            quarter=quarter,
         )
 
         return jsonify({"success": True, **data})
