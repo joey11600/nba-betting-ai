@@ -1,45 +1,100 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flask API for Base44 Integration
-Provides REST endpoints for player search, bet tracking, and analytics
+Simplified Flask API for NBA Stats Fetching
+This is a STATELESS microservice - NO database, just fetches stats from NBA API
 """
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from nba_betting_stats_api import NBABettingStatsAPI
 import traceback
 import time
+from datetime import datetime
+import pandas as pd
+
+# NBA API imports
+try:
+    from nba_api.stats.static import players, teams
+    from nba_api.stats.endpoints import (
+        playergamelog,
+        PlayerGameLog
+    )
+    NBA_API_AVAILABLE = True
+except ImportError:
+    NBA_API_AVAILABLE = False
+    print("⚠️  Install nba_api: pip install nba_api pandas")
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for Base44
+CORS(app)
 
-# Initialize API
-api = NBABettingStatsAPI(db_path="nba_betting_tracker.db")
+# Player cache (so we don't reload every time)
+_player_cache = None
+_player_cache_time = None
+
 
 # =======================
-# PLAYER ENDPOINTS
+# PLAYER SEARCH
 # =======================
 
 @app.route('/api/players/search', methods=['GET'])
 def search_players():
     """
-    Search for players with autocomplete
+    Search for active NBA players
     GET /api/players/search?q=jaden&limit=10
     """
+    global _player_cache, _player_cache_time
+    
     try:
         query = request.args.get('q', '').strip()
         limit = int(request.args.get('limit', 10))
         
         if not query:
-            return jsonify({'players': []})
+            return jsonify({'success': True, 'players': [], 'count': 0})
         
-        results = api.search_players(query, limit=limit)
+        if not NBA_API_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'error': 'NBA API not available'
+            }), 500
+        
+        # Cache player list for 1 hour
+        if (_player_cache is None or _player_cache_time is None or 
+            time.time() - _player_cache_time > 3600):
+            
+            print("🔄 Loading active NBA players...")
+            all_players = players.get_players()
+            _player_cache = [p for p in all_players if p.get("is_active")]
+            _player_cache_time = time.time()
+            print(f"✅ Loaded {len(_player_cache)} active players")
+        
+        # Search
+        search_lower = query.lower()
+        matches = []
+        
+        for player in _player_cache:
+            full_name = player.get("full_name", "").lower()
+            first_name = player.get("first_name", "").lower()
+            last_name = player.get("last_name", "").lower()
+            
+            if (search_lower in full_name or 
+                search_lower in last_name or 
+                search_lower in first_name):
+                
+                matches.append({
+                    "player_id": player["id"],
+                    "full_name": player["full_name"],
+                    "first_name": player.get("first_name", ""),
+                    "last_name": player.get("last_name", ""),
+                    "headshot_url": f"https://cdn.nba.com/headshots/nba/latest/260x190/{player['id']}.png"
+                })
+                
+                if len(matches) >= limit:
+                    break
         
         return jsonify({
             'success': True,
-            'players': results,
-            'count': len(results)
+            'players': matches,
+            'count': len(matches)
         })
         
     except Exception as e:
@@ -57,9 +112,15 @@ def get_player(player_id):
     GET /api/players/1630596
     """
     try:
-        player = api.get_player_by_id(player_id)
+        if not NBA_API_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'error': 'NBA API not available'
+            }), 500
         
-        if not player:
+        player_info = players.find_player_by_id(player_id)
+        
+        if not player_info:
             return jsonify({
                 'success': False,
                 'error': 'Player not found'
@@ -67,7 +128,12 @@ def get_player(player_id):
         
         return jsonify({
             'success': True,
-            'player': player
+            'player': {
+                'player_id': player_info['id'],
+                'full_name': player_info['full_name'],
+                'first_name': player_info['first_name'],
+                'last_name': player_info['last_name']
+            }
         })
         
     except Exception as e:
@@ -77,322 +143,52 @@ def get_player(player_id):
         }), 500
 
 
-# ======================
-# BET TRACKING ENDPOINTS
-# ======================
+# =======================
+# GAME STATS FETCHING
+# =======================
 
-@app.route('/api/bets', methods=['POST'])
-def create_bet():
+@app.route('/api/stats/fetch-game', methods=['POST'])
+def fetch_game_stats():
     """
-    Create a new bet
-    POST /api/bets
-    Body: {
-        "bet_date": "2024-12-01",
-        "game_date": "2024-12-01",
-        "bet_type": "parlay",
-        "odds": -110,
-        "stake": 1.0
-    }
-    """
-    try:
-        data = request.json
-        
-        bet_id = api.create_bet(
-            bet_date=data['bet_date'],
-            game_date=data['game_date'],
-            bet_type=data.get('bet_type', 'parlay'),
-            odds=data.get('odds', -110),
-            stake=data.get('stake', 1.0)
-        )
-        
-        return jsonify({
-            'success': True,
-            'bet_id': bet_id
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-@app.route('/api/bets/<int:bet_id>/props', methods=['POST'])
-def add_prop(bet_id):
-    """
-    Add a prop to a bet
-    POST /api/bets/1/props
-    Body: {
-        "player_id": 1630596,
-        "player_name": "Jaden Ivey",
-        "prop_type": "points",
-        "line": 15.5,
-        "over_under": "over"
-    }
-    """
-    try:
-        data = request.json
-        
-        prop_id = api.add_prop_to_bet(
-            bet_id=bet_id,
-            player_id=data['player_id'],
-            player_name=data['player_name'],
-            prop_type=data['prop_type'],
-            line=data['line'],
-            over_under=data.get('over_under', 'over')
-        )
-        
-        return jsonify({
-            'success': True,
-            'prop_id': prop_id
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-@app.route('/api/bets/<int:bet_id>/result', methods=['PUT'])
-def mark_bet_result(bet_id):
-    """
-    Mark bet result
-    PUT /api/bets/1/result
-    Body: {"result": "won"}  // won, lost, push
-    """
-    try:
-        data = request.json
-        api.mark_bet_result(bet_id, data['result'])
-        
-        return jsonify({
-            'success': True,
-            'message': f'Bet {bet_id} marked as {data["result"]}'
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-@app.route('/api/props/<int:prop_id>/result', methods=['PUT'])
-def mark_prop_result(prop_id):
-    """
-    Mark prop result (hit/miss)
-    PUT /api/props/1/result
-    Body: {
-        "result": "miss",
-        "actual_value": 13.0,
-        "capture_stats": true
-    }
-    """
-    try:
-        data = request.json
-        
-        api.mark_prop_result(
-            prop_id=prop_id,
-            result=data['result'],
-            actual_value=data['actual_value'],
-            capture_stats=data.get('capture_stats', True)
-        )
-        
-        return jsonify({
-            'success': True,
-            'message': f'Prop {prop_id} marked as {data["result"]}',
-            'stats_captured': data.get('capture_stats', True)
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-@app.route('/api/bets/recent', methods=['GET'])
-def get_recent_bets():
-    """
-    Get recent bets
-    GET /api/bets/recent?limit=20
-    """
-    try:
-        limit = int(request.args.get('limit', 50))
-        bets = api.get_recent_bets(limit=limit)
-        
-        return jsonify({
-            'success': True,
-            'bets': bets,
-            'count': len(bets)
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-# ======================
-# ANALYTICS ENDPOINTS
-# ======================
-
-@app.route('/api/analytics/bust-players', methods=['GET'])
-def get_bust_players():
-    """
-    Get players who frequently cause losses
-    GET /api/analytics/bust-players?min_props=5
-    """
-    try:
-        min_props = int(request.args.get('min_props', 5))
-        players = api.get_bust_players(min_props=min_props)
-        
-        return jsonify({
-            'success': True,
-            'players': players,
-            'count': len(players)
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-@app.route('/api/analytics/tough-matchups', methods=['GET'])
-def get_tough_matchups():
-    """
-    Get opponent teams that cause frequent misses
-    GET /api/analytics/tough-matchups?min_games=3
-    """
-    try:
-        min_games = int(request.args.get('min_games', 3))
-        teams = api.get_tough_matchups(min_games=min_games)
-        
-        return jsonify({
-            'success': True,
-            'teams': teams,
-            'count': len(teams)
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-@app.route('/api/analytics/player-vs-opponent', methods=['GET'])
-def get_player_vs_opponent():
-    """
-    Get player stats vs specific opponent
-    GET /api/analytics/player-vs-opponent?player_id=1630596&opponent=LAL
-    """
-    try:
-        player_id = int(request.args.get('player_id'))
-        opponent = request.args.get('opponent')
-        
-        stats = api.get_player_vs_opponent_stats(player_id, opponent)
-        
-        return jsonify({
-            'success': True,
-            'stats': stats
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-# ======================
-# PLAYER RESEARCH ENDPOINTS
-# ======================
-
-@app.route("/api/research/player")
-def research_player():
-    try:
-        player_id = int(request.args.get("player_id"))
-        stat = request.args.get("stat", "pts")
-        window = request.args.get("window", "L10")
-        opponent = request.args.get("opponent", None)
-        season_filter = request.args.get("season_filter", "all")
-        quarter = request.args.get("quarter", None)  # Q1, Q2, Q3, Q4, or None
-        
-        # Accept BOTH parameter names for compatibility
-        game_result = request.args.get("game_result") or request.args.get("result_filter", "any")
-
-        data = api.get_player_research(
-            player_id=player_id,
-            stat=stat,
-            window=window,
-            opponent=opponent,
-            season_filter=season_filter,
-            game_result=game_result,
-            quarter=quarter,
-        )
-
-        return jsonify({"success": True, **data})
-
-    except Exception as e:
-        print("Error in /api/research/player:", e)
-        return jsonify({
-            "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc(),
-        }), 500
-
-
-# ======================
-# HEALTH CHECK
-# ======================
-
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        'success': True,
-        'status': 'healthy',
-        'service': 'NBA Betting Stats API'
-    })
-
-# ======================
-# AUTO-FETCH PROP RESULT ENDPOINT
-# ======================
-
-@app.route('/api/props/<int:prop_id>/auto-result', methods=['PUT'])
-def auto_fetch_prop_result(prop_id):
-    """
-    Automatically fetch game stats and determine hit/miss
-    PUT /api/props/1/auto-result
+    Fetch game stats for a player on a specific date
+    POST /api/stats/fetch-game
     Body: {
         "player_id": 1630596,
         "player_name": "Jaden Ivey",
         "game_date": "2024-12-10",
-        "prop_type": "points",
-        "line": 15.5,
-        "over_under": "over"
+        "stat_type": "points"
+    }
+    
+    Returns: {
+        "success": true,
+        "game_found": true,
+        "actual_value": 13.0,
+        "all_stats": {...}  // Full game stats
     }
     """
     try:
-        data = request.json
+        if not NBA_API_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'error': 'NBA API not available'
+            }), 500
         
-        # Get game stats from NBA API
-        game_log = api._get_game_for_date(
-            player_id=data['player_id'],
-            game_date=data['game_date']
-        )
+        data = request.json
+        player_id = data['player_id']
+        game_date = data['game_date']  # Format: "2024-12-10"
+        stat_type = data.get('stat_type', 'points').lower()
+        
+        # Get the game log for this player on this date
+        game_log = get_game_for_date(player_id, game_date)
         
         if not game_log:
             return jsonify({
-                'success': False,
-                'error': f"No game found for {data['player_name']} on {data['game_date']}"
+                'success': True,
+                'game_found': False,
+                'error': f"No game found for player {player_id} on {game_date}"
             }), 404
         
-        # Extract actual stat value based on prop type
+        # Extract the requested stat
         stat_map = {
             'points': 'PTS',
             'rebounds': 'REB',
@@ -401,45 +197,33 @@ def auto_fetch_prop_result(prop_id):
             'blocks': 'BLK',
             'threes': 'FG3M',
             'turnovers': 'TOV',
-            'pra': lambda log: log.get('PTS', 0) + log.get('REB', 0) + log.get('AST', 0),
-            'pr': lambda log: log.get('PTS', 0) + log.get('REB', 0),
-            'pa': lambda log: log.get('PTS', 0) + log.get('AST', 0),
-            'ra': lambda log: log.get('REB', 0) + log.get('AST', 0)
+            'fga': 'FGA',
+            'fta': 'FTA'
         }
         
-        prop_type_lower = data['prop_type'].lower()
-        
-        if callable(stat_map.get(prop_type_lower)):
-            actual_value = stat_map[prop_type_lower](game_log)
-        else:
-            stat_key = stat_map.get(prop_type_lower, 'PTS')
-            actual_value = game_log.get(stat_key, 0)
-        
-        # Determine hit or miss
-        line = data['line']
-        over_under = data.get('over_under', 'over').lower()
-        
-        if over_under == 'over':
-            result = 'hit' if actual_value > line else 'miss'
-        else:  # under
-            result = 'hit' if actual_value < line else 'miss'
-        
-        # Update the prop with result
-        api.mark_prop_result(
-            prop_id=prop_id,
-            result=result,
-            actual_value=actual_value,
-            capture_stats=(result == 'miss')  # Only capture detailed stats on misses
-        )
+        stat_key = stat_map.get(stat_type, 'PTS')
+        actual_value = game_log.get(stat_key, 0)
         
         return jsonify({
             'success': True,
-            'prop_id': prop_id,
-            'result': result,
+            'game_found': True,
             'actual_value': actual_value,
-            'line': line,
-            'over_under': over_under,
-            'message': f"{data['player_name']} {result.upper()}: {actual_value} (needed {over_under} {line})"
+            'stat_type': stat_type,
+            'game_date': game_date,
+            'all_stats': {
+                'PTS': game_log.get('PTS', 0),
+                'REB': game_log.get('REB', 0),
+                'AST': game_log.get('AST', 0),
+                'STL': game_log.get('STL', 0),
+                'BLK': game_log.get('BLK', 0),
+                'FG3M': game_log.get('FG3M', 0),
+                'TOV': game_log.get('TOV', 0),
+                'FGA': game_log.get('FGA', 0),
+                'FGM': game_log.get('FGM', 0),
+                'FG_PCT': game_log.get('FG_PCT', 0),
+                'MATCHUP': game_log.get('MATCHUP', ''),
+                'WL': game_log.get('WL', '')
+            }
         })
         
     except Exception as e:
@@ -450,61 +234,58 @@ def auto_fetch_prop_result(prop_id):
         }), 500
 
 
-# ======================
-# BATCH BACKFILL ENDPOINT
-# ======================
-
-@app.route('/api/props/backfill-results', methods=['POST'])
-def backfill_prop_results():
+@app.route('/api/stats/batch-fetch', methods=['POST'])
+def batch_fetch_stats():
     """
-    Backfill results for multiple props at once
-    POST /api/props/backfill-results
+    Fetch stats for multiple props at once
+    POST /api/stats/batch-fetch
     Body: {
         "props": [
             {
-                "prop_id": 1,
                 "player_id": 1630596,
-                "player_name": "Jaden Ivey",
                 "game_date": "2024-12-10",
-                "prop_type": "points",
-                "line": 15.5,
-                "over_under": "over"
+                "stat_type": "points"
             },
             ...
         ]
     }
+    
+    Returns: Array of results with actual_value for each prop
     """
     try:
+        if not NBA_API_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'error': 'NBA API not available'
+            }), 500
+        
         data = request.json
         props = data.get('props', [])
         
-        results = {
-            'total': len(props),
-            'processed': 0,
-            'hits': 0,
-            'misses': 0,
-            'errors': []
-        }
+        results = []
         
         for prop in props:
             try:
-                # Add delay to avoid rate limiting NBA API
+                # Rate limit: 0.6 seconds between requests
                 time.sleep(0.6)
                 
-                # Get game stats
-                game_log = api._get_game_for_date(
-                    player_id=prop['player_id'],
-                    game_date=prop['game_date']
-                )
+                player_id = prop['player_id']
+                game_date = prop['game_date']
+                stat_type = prop.get('stat_type', 'points').lower()
+                
+                # Get game log
+                game_log = get_game_for_date(player_id, game_date)
                 
                 if not game_log:
-                    results['errors'].append({
-                        'prop_id': prop['prop_id'],
-                        'error': f"No game found for {prop['player_name']} on {prop['game_date']}"
+                    results.append({
+                        'player_id': player_id,
+                        'game_date': game_date,
+                        'game_found': False,
+                        'error': 'No game found'
                     })
                     continue
                 
-                # Extract actual stat value
+                # Extract stat
                 stat_map = {
                     'points': 'PTS',
                     'rebounds': 'REB',
@@ -515,42 +296,29 @@ def backfill_prop_results():
                     'turnovers': 'TOV'
                 }
                 
-                prop_type_lower = prop['prop_type'].lower()
-                stat_key = stat_map.get(prop_type_lower, 'PTS')
+                stat_key = stat_map.get(stat_type, 'PTS')
                 actual_value = game_log.get(stat_key, 0)
                 
-                # Determine hit or miss
-                line = prop['line']
-                over_under = prop.get('over_under', 'over').lower()
-                
-                if over_under == 'over':
-                    result = 'hit' if actual_value > line else 'miss'
-                else:
-                    result = 'hit' if actual_value < line else 'miss'
-                
-                # Update prop
-                api.mark_prop_result(
-                    prop_id=prop['prop_id'],
-                    result=result,
-                    actual_value=actual_value,
-                    capture_stats=(result == 'miss')
-                )
-                
-                results['processed'] += 1
-                if result == 'hit':
-                    results['hits'] += 1
-                else:
-                    results['misses'] += 1
+                results.append({
+                    'player_id': player_id,
+                    'game_date': game_date,
+                    'game_found': True,
+                    'stat_type': stat_type,
+                    'actual_value': actual_value
+                })
                 
             except Exception as e:
-                results['errors'].append({
-                    'prop_id': prop['prop_id'],
+                results.append({
+                    'player_id': prop.get('player_id'),
+                    'game_date': prop.get('game_date'),
                     'error': str(e)
                 })
         
         return jsonify({
             'success': True,
-            'results': results
+            'results': results,
+            'total': len(props),
+            'processed': len(results)
         })
         
     except Exception as e:
@@ -561,34 +329,104 @@ def backfill_prop_results():
         }), 500
 
 
-# ======================
+# =======================
+# HELPER FUNCTIONS
+# =======================
+
+def get_game_for_date(player_id: int, game_date: str):
+    """
+    Get player's game log for specific date
+    game_date format: "2024-12-10"
+    Returns: dict of game stats or None
+    """
+    try:
+        # Parse date and determine season
+        date_obj = datetime.strptime(game_date, '%Y-%m-%d')
+        
+        if date_obj.month >= 10:
+            season = f"{date_obj.year}-{str(date_obj.year + 1)[-2:]}"
+        else:
+            season = f"{date_obj.year - 1}-{str(date_obj.year)[-2:]}"
+        
+        # Get game logs with rate limiting
+        time.sleep(0.6)
+        gamelog = playergamelog.PlayerGameLog(
+            player_id=player_id,
+            season=season
+        )
+        
+        df = gamelog.get_data_frames()[0]
+        
+        if df.empty:
+            return None
+        
+        # Find game on that date
+        df["GAME_DATE_DT"] = pd.to_datetime(df["GAME_DATE"]).dt.date
+        game_date_obj = pd.to_datetime(game_date).date()
+        matching_games = df[df["GAME_DATE_DT"] == game_date_obj]
+        
+        if not matching_games.empty:
+            return matching_games.iloc[0].to_dict()
+        
+        return None
+        
+    except Exception as e:
+        print(f"Error fetching game: {e}")
+        return None
+
+
+# =======================
+# HEALTH CHECK
+# =======================
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        'success': True,
+        'status': 'healthy',
+        'service': 'NBA Stats Fetching API',
+        'nba_api_available': NBA_API_AVAILABLE
+    })
+
+
+@app.route('/', methods=['GET'])
+def root():
+    """Root endpoint"""
+    return jsonify({
+        'service': 'NBA Stats Fetching API',
+        'status': 'running',
+        'endpoints': {
+            'player_search': '/api/players/search?q=jaden',
+            'player_by_id': '/api/players/<player_id>',
+            'fetch_game_stats': 'POST /api/stats/fetch-game',
+            'batch_fetch': 'POST /api/stats/batch-fetch',
+            'health': '/api/health'
+        }
+    })
+
+
+# =======================
 # RUN SERVER
-# ======================
+# =======================
 
 if __name__ == '__main__':
     import os
     
     print("\n" + "="*70)
-    print("🏀 NBA BETTING STATS API SERVER")
+    print("🏀 NBA STATS FETCHING API (Simplified)")
     print("="*70)
     
-    # Get port from environment variable (Railway sets this)
     port = int(os.environ.get('PORT', 5000))
     
     print(f"\n📡 Starting Flask server on port {port}")
     print("\n📚 Available endpoints:")
     print("  GET  /api/players/search?q=jaden")
     print("  GET  /api/players/<id>")
-    print("  POST /api/bets")
-    print("  POST /api/bets/<id>/props")
-    print("  PUT  /api/bets/<id>/result")
-    print("  PUT  /api/props/<id>/result")
-    print("  GET  /api/bets/recent")
-    print("  GET  /api/analytics/bust-players")
-    print("  GET  /api/analytics/tough-matchups")
-    print("  GET  /api/analytics/player-vs-opponent")
+    print("  POST /api/stats/fetch-game")
+    print("  POST /api/stats/batch-fetch")
+    print("  GET  /api/health")
     print("\n" + "="*70 + "\n")
     
-    # Use production settings for Railway
     debug_mode = os.environ.get('FLASK_ENV') != 'production'
     app.run(host='0.0.0.0', port=port, debug=debug_mode)
