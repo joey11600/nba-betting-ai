@@ -27,6 +27,16 @@ except ImportError:
     NBA_API_AVAILABLE = False
     print("⚠️  Install nba_api: pip install nba_api")
 
+# Try to import quarter stats parser (optional)
+try:
+    from quarter_stats_parser import QuarterStatsParser
+    QUARTER_STATS_AVAILABLE = True
+    print("✅ Quarter stats parser loaded")
+except ImportError:
+    QUARTER_STATS_AVAILABLE = False
+    QuarterStatsParser = None
+    print("⚠️ Quarter stats parser not available - quarter filtering disabled")
+
 
 class NBABettingStatsAPI:
     """
@@ -40,7 +50,13 @@ class NBABettingStatsAPI:
         self.init_database()
         self._player_cache = None
         self._player_cache_time = None
-        self.quarter_parser = QuarterStatsParser()
+        
+        if QUARTER_STATS_AVAILABLE:
+            self.quarter_parser = QuarterStatsParser()
+            print("✅ Quarter stats parser initialized")
+        else:
+            self.quarter_parser = None
+            print("⚠️ Quarter stats disabled")
         
     def init_database(self):
         """Create database tables for tracking bets and stats"""
@@ -121,8 +137,10 @@ class NBABettingStatsAPI:
     
     def get_player_quarter_stats(self, player_id: int, season: str, game_id: str = None) -> Dict:
         """Get quarter-by-quarter stats for a player"""
-        if not NBA_API_AVAILABLE:
+        if not QUARTER_STATS_AVAILABLE or self.quarter_parser is None:
+            print("⚠️ Quarter stats not available")
             return {}
+    
         try:
             return self.quarter_parser.get_quarter_stats(player_id, season, game_id)
         except Exception as e:
