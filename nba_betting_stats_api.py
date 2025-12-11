@@ -920,17 +920,17 @@ class NBABettingStatsAPI:
                 # Get quarter stats for all games
                 quarter_data = self.get_player_quarter_stats(player_id, season_str)
                 
-                if quarter_data:
+                if quarter_data and 'games' in quarter_data:
                     # Update chart_games with quarter-specific values
                     updated_count = 0
                     for game in chart_games:
                         game_id = game.get('game_id')
                         
-                        if game_id and game_id in quarter_data:
-                            game_quarters = quarter_data[game_id]
+                        if game_id and game_id in quarter_data['games']:
+                            game_quarters = quarter_data['games'][game_id]
                             
-                            if quarter in game_quarters:
-                                quarter_stats = game_quarters[quarter]
+                            if quarter.upper() in game_quarters:
+                                quarter_stats = game_quarters[quarter.upper()]
                                 
                                 # Recalculate value based on stat type
                                 if stat == "pts":
