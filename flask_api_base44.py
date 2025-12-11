@@ -358,6 +358,207 @@ def health_check():
         'service': 'NBA Betting Stats API'
     })
 
+# ======================
+# AUTO-FETCH PROP RESULT ENDPOINT
+# ======================
+
+@app.route('/api/props/<int:prop_id>/auto-result', methods=['PUT'])
+def auto_fetch_prop_result(prop_id):
+    """
+    Automatically fetch game stats and determine hit/miss
+    PUT /api/props/1/auto-result
+    Body: {
+        "player_id": 1630596,
+        "player_name": "Jaden Ivey",
+        "game_date": "2024-12-10",
+        "prop_type": "points",
+        "line": 15.5,
+        "over_under": "over"
+    }
+    """
+    try:
+        data = request.json
+        
+        # Get game stats from NBA API
+        game_log = api._get_game_for_date(
+            player_id=data['player_id'],
+            game_date=data['game_date']
+        )
+        
+        if not game_log:
+            return jsonify({
+                'success': False,
+                'error': f"No game found for {data['player_name']} on {data['game_date']}"
+            }), 404
+        
+        # Extract actual stat value based on prop type
+        stat_map = {
+            'points': 'PTS',
+            'rebounds': 'REB',
+            'assists': 'AST',
+            'steals': 'STL',
+            'blocks': 'BLK',
+            'threes': 'FG3M',
+            'turnovers': 'TOV',
+            'pra': lambda log: log.get('PTS', 0) + log.get('REB', 0) + log.get('AST', 0),
+            'pr': lambda log: log.get('PTS', 0) + log.get('REB', 0),
+            'pa': lambda log: log.get('PTS', 0) + log.get('AST', 0),
+            'ra': lambda log: log.get('REB', 0) + log.get('AST', 0)
+        }
+        
+        prop_type_lower = data['prop_type'].lower()
+        
+        if callable(stat_map.get(prop_type_lower)):
+            actual_value = stat_map[prop_type_lower](game_log)
+        else:
+            stat_key = stat_map.get(prop_type_lower, 'PTS')
+            actual_value = game_log.get(stat_key, 0)
+        
+        # Determine hit or miss
+        line = data['line']
+        over_under = data.get('over_under', 'over').lower()
+        
+        if over_under == 'over':
+            result = 'hit' if actual_value > line else 'miss'
+        else:  # under
+            result = 'hit' if actual_value < line else 'miss'
+        
+        # Update the prop with result
+        api.mark_prop_result(
+            prop_id=prop_id,
+            result=result,
+            actual_value=actual_value,
+            capture_stats=(result == 'miss')  # Only capture detailed stats on misses
+        )
+        
+        return jsonify({
+            'success': True,
+            'prop_id': prop_id,
+            'result': result,
+            'actual_value': actual_value,
+            'line': line,
+            'over_under': over_under,
+            'message': f"{data['player_name']} {result.upper()}: {actual_value} (needed {over_under} {line})"
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
+
+
+# ======================
+# BATCH BACKFILL ENDPOINT
+# ======================
+
+@app.route('/api/props/backfill-results', methods=['POST'])
+def backfill_prop_results():
+    """
+    Backfill results for multiple props at once
+    POST /api/props/backfill-results
+    Body: {
+        "props": [
+            {
+                "prop_id": 1,
+                "player_id": 1630596,
+                "player_name": "Jaden Ivey",
+                "game_date": "2024-12-10",
+                "prop_type": "points",
+                "line": 15.5,
+                "over_under": "over"
+            },
+            ...
+        ]
+    }
+    """
+    try:
+        data = request.json
+        props = data.get('props', [])
+        
+        results = {
+            'total': len(props),
+            'processed': 0,
+            'hits': 0,
+            'misses': 0,
+            'errors': []
+        }
+        
+        for prop in props:
+            try:
+                # Add delay to avoid rate limiting NBA API
+                time.sleep(0.6)
+                
+                # Get game stats
+                game_log = api._get_game_for_date(
+                    player_id=prop['player_id'],
+                    game_date=prop['game_date']
+                )
+                
+                if not game_log:
+                    results['errors'].append({
+                        'prop_id': prop['prop_id'],
+                        'error': f"No game found for {prop['player_name']} on {prop['game_date']}"
+                    })
+                    continue
+                
+                # Extract actual stat value
+                stat_map = {
+                    'points': 'PTS',
+                    'rebounds': 'REB',
+                    'assists': 'AST',
+                    'steals': 'STL',
+                    'blocks': 'BLK',
+                    'threes': 'FG3M',
+                    'turnovers': 'TOV'
+                }
+                
+                prop_type_lower = prop['prop_type'].lower()
+                stat_key = stat_map.get(prop_type_lower, 'PTS')
+                actual_value = game_log.get(stat_key, 0)
+                
+                # Determine hit or miss
+                line = prop['line']
+                over_under = prop.get('over_under', 'over').lower()
+                
+                if over_under == 'over':
+                    result = 'hit' if actual_value > line else 'miss'
+                else:
+                    result = 'hit' if actual_value < line else 'miss'
+                
+                # Update prop
+                api.mark_prop_result(
+                    prop_id=prop['prop_id'],
+                    result=result,
+                    actual_value=actual_value,
+                    capture_stats=(result == 'miss')
+                )
+                
+                results['processed'] += 1
+                if result == 'hit':
+                    results['hits'] += 1
+                else:
+                    results['misses'] += 1
+                
+            except Exception as e:
+                results['errors'].append({
+                    'prop_id': prop['prop_id'],
+                    'error': str(e)
+                })
+        
+        return jsonify({
+            'success': True,
+            'results': results
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
+
 
 # ======================
 # RUN SERVER
