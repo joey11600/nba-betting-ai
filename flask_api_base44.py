@@ -9,6 +9,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from nba_betting_stats_api import NBABettingStatsAPI
 import traceback
+import time
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for Base44
