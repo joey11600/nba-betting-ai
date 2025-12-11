@@ -12,6 +12,7 @@ from typing import List, Dict, Optional, Tuple
 from nba_api.stats.endpoints import PlayerGameLog
 import time
 import pandas as pd
+from quarter_stats_parser import QuarterStatsParser
 
 try:
     from nba_api.stats.static import players, teams
@@ -39,6 +40,7 @@ class NBABettingStatsAPI:
         self.init_database()
         self._player_cache = None
         self._player_cache_time = None
+        self.quarter_parser = QuarterStatsParser()
         
     def init_database(self):
         """Create database tables for tracking bets and stats"""
@@ -114,6 +116,18 @@ class NBABettingStatsAPI:
         conn.close()
         
         print("✓ Database initialized")
+
+    # PLAYER QUARTER STATS #
+    
+    def get_player_quarter_stats(self, player_id: int, season: str, game_id: str = None) -> Dict:
+    """Get quarter-by-quarter stats for a player"""
+    if not NBA_API_AVAILABLE:
+        return {}
+    try:
+        return self.quarter_parser.get_quarter_stats(player_id, season, game_id)
+    except Exception as e:
+        print(f"❌ Error getting quarter stats: {e}")
+        return {}
     
     # ======================
     # PLAYER SEARCH
@@ -637,6 +651,7 @@ class NBABettingStatsAPI:
         opponent: str = None,
         season_filter: str = "all",
         game_result: str = "any",
+        quarter_filter: str = "full_game"
     ):
         """
         Return last-N games or season / H2H slice for a player.
@@ -872,7 +887,75 @@ class NBABettingStatsAPI:
                     "game_result": game_wl,  # ← Use game_wl here
                 }
             )
-
+        
+        # Apply quarter filtering if requested
+        if quarter_filter.upper() != 'FULL_GAME':
+            # Get the season from the logs
+            if not logs.empty and "SEASON_ID" in logs.columns:
+                season_id = logs["SEASON_ID"].iloc[0]  # e.g., '22025'
+                
+                # Convert season format (22025 → 2025-26)
+                year = int(season_id[1:])
+                season_str = f"{year}-{str(year + 1)[-2:]}"
+                
+                print(f"🔄 Fetching {quarter_filter} stats for season {season_str}...")
+                
+                # Get quarter stats for all games
+                quarter_data = self.get_player_quarter_stats(player_id, season_str)
+                
+                if quarter_data:
+                    # Update chart_games with quarter-specific values
+                    updated_count = 0
+                    for game in chart_games:
+                        game_id = game.get('game_id')
+                        
+                        if game_id and game_id in quarter_data:
+                            game_quarters = quarter_data[game_id]
+                            
+                            if quarter_filter in game_quarters:
+                                quarter_stats = game_quarters[quarter_filter]
+                                
+                                # Recalculate value based on stat type
+                                if stat == "pts":
+                                    game['value'] = quarter_stats['PTS']
+                                elif stat == "reb":
+                                    game['value'] = quarter_stats['REB']
+                                elif stat == "ast":
+                                    game['value'] = quarter_stats['AST']
+                                elif stat == "3pm":
+                                    game['value'] = quarter_stats['FG3M']
+                                elif stat == "stl":
+                                    game['value'] = quarter_stats['STL']
+                                elif stat == "blk":
+                                    game['value'] = quarter_stats['BLK']
+                                elif stat == "pra":
+                                    game['value'] = quarter_stats['PTS'] + quarter_stats['REB'] + quarter_stats['AST']
+                                elif stat == "pr":
+                                    game['value'] = quarter_stats['PTS'] + quarter_stats['REB']
+                                elif stat == "ra":
+                                    game['value'] = quarter_stats['REB'] + quarter_stats['AST']
+                                elif stat == "pa":
+                                    game['value'] = quarter_stats['PTS'] + quarter_stats['AST']
+                                
+                                game['quarter_filter'] = quarter_filter
+                                updated_count += 1
+                    
+                    print(f"✅ Updated {updated_count} games with {quarter_filter} stats")
+                    
+                    # Recalculate summary with new values
+                    values = [g['value'] for g in chart_games]
+                    s = pd.Series(values)
+                    
+                    summary = {
+                        "games": int(len(values)),
+                        "avg": float(round(s.mean(), 1)),
+                        "min": float(s.min()),
+                        "max": float(s.max()),
+                        "median": float(s.median()),
+                        "std_dev": float(round(s.std(ddof=0), 2)),
+                        "hit_rate": None,
+                    }
+        
         player_info = self.get_player_by_id(player_id) or {
             "player_id": player_id,
             "full_name": "",
@@ -916,6 +999,7 @@ class NBABettingStatsAPI:
                 "window_label": window_labels.get(label_key, window or "Custom"),
                 "season_filter": season_filter,
                 "game_result": game_result,
+                "quarter_filter": quarter_filter,
             },
         }
 
