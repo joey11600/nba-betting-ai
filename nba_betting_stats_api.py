@@ -120,14 +120,14 @@ class NBABettingStatsAPI:
     # PLAYER QUARTER STATS #
     
     def get_player_quarter_stats(self, player_id: int, season: str, game_id: str = None) -> Dict:
-    """Get quarter-by-quarter stats for a player"""
-    if not NBA_API_AVAILABLE:
-        return {}
-    try:
-        return self.quarter_parser.get_quarter_stats(player_id, season, game_id)
-    except Exception as e:
-        print(f"❌ Error getting quarter stats: {e}")
-        return {}
+        """Get quarter-by-quarter stats for a player"""
+        if not NBA_API_AVAILABLE:
+            return {}
+        try:
+            return self.quarter_parser.get_quarter_stats(player_id, season, game_id)
+        except Exception as e:
+            print(f"❌ Error getting quarter stats: {e}")
+            return {}
     
     # ======================
     # PLAYER SEARCH
