@@ -915,7 +915,7 @@ class NBABettingStatsAPI:
                 year = int(season_id[1:])
                 season_str = f"{year}-{str(year + 1)[-2:]}"
                 
-                print(f"🔄 Fetching {quarter_filter} stats for season {season_str}...")
+                print(f"🔄 Fetching {quarter} stats for season {season_str}...")
                 
                 # Get quarter stats for all games
                 quarter_data = self.get_player_quarter_stats(player_id, season_str)
@@ -929,8 +929,8 @@ class NBABettingStatsAPI:
                         if game_id and game_id in quarter_data:
                             game_quarters = quarter_data[game_id]
                             
-                            if quarter_filter in game_quarters:
-                                quarter_stats = game_quarters[quarter_filter]
+                            if quarter in game_quarters:
+                                quarter_stats = game_quarters[quarter]
                                 
                                 # Recalculate value based on stat type
                                 if stat == "pts":
