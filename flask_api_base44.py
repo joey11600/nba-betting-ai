@@ -156,14 +156,17 @@ def fetch_game_stats():
         "player_id": 1630596,
         "player_name": "Jaden Ivey",
         "game_date": "2024-12-10",
-        "stat_type": "points"
+        "stat_type": "points",
+        "period": "Q1"  // Optional: Q1, Q2, Q3, Q4, 1H, 2H, or null for full game
     }
     
     Returns: {
         "success": true,
         "game_found": true,
         "actual_value": 13.0,
-        "all_stats": {...}  // Full game stats
+        "game_id": "0022400359",
+        "period": "Q1",  // If specified
+        "all_stats": {...}
     }
     """
     try:
@@ -177,7 +180,7 @@ def fetch_game_stats():
         player_id = data['player_id']
         game_date = data['game_date']  # Format: "2024-12-10"
         stat_type = data.get('stat_type', 'points').lower()
-        period = data.get('period', None)
+        period = data.get('period', None)  # Q1, Q2, Q3, Q4, 1H, 2H, or None
         
         # Get game log
         game_log = get_game_for_date(player_id, game_date)
@@ -197,7 +200,6 @@ def fetch_game_stats():
             from quarter_stats_parser import QuarterStatsParser
     
             # Determine season
-            from datetime import datetime
             date_obj = datetime.strptime(game_date, '%Y-%m-%d')
             if date_obj.month >= 10:
                 season = f"{date_obj.year}-{str(date_obj.year + 1)[-2:]}"
@@ -243,7 +245,7 @@ def fetch_game_stats():
                 'all_stats': period_stats
             })
 
-        # Otherwise, use full game stats (existing code)
+        # Otherwise, use full game stats
         stat_map = {
             'points': 'PTS',
             'rebounds': 'REB',
@@ -280,45 +282,6 @@ def fetch_game_stats():
             }
         })
         
-        # Extract the requested stat
-        stat_map = {
-            'points': 'PTS',
-            'rebounds': 'REB',
-            'assists': 'AST',
-            'steals': 'STL',
-            'blocks': 'BLK',
-            'threes': 'FG3M',
-            'turnovers': 'TOV',
-            'fga': 'FGA',
-            'fta': 'FTA'
-        }
-        
-        stat_key = stat_map.get(stat_type, 'PTS')
-        actual_value = game_log.get(stat_key, 0)
-        
-        return jsonify({
-            'success': True,
-            'game_found': True,
-            'actual_value': actual_value,
-            'stat_type': stat_type,
-            'game_date': game_date,
-            'game_id': str(game_log.get('Game_ID', '')),  # FIXED: Use Game_ID (capital G, capital I)
-            'all_stats': {
-                'PTS': game_log.get('PTS', 0),
-                'REB': game_log.get('REB', 0),
-                'AST': game_log.get('AST', 0),
-                'STL': game_log.get('STL', 0),
-                'BLK': game_log.get('BLK', 0),
-                'FG3M': game_log.get('FG3M', 0),
-                'TOV': game_log.get('TOV', 0),
-                'FGA': game_log.get('FGA', 0),
-                'FGM': game_log.get('FGM', 0),
-                'FG_PCT': game_log.get('FG_PCT', 0),
-                'MATCHUP': game_log.get('MATCHUP', ''),
-                'WL': game_log.get('WL', '')
-            }
-        })
-        
     except Exception as e:
         return jsonify({
             'success': False,
@@ -337,7 +300,8 @@ def batch_fetch_stats():
             {
                 "player_id": 1630596,
                 "game_date": "2024-12-10",
-                "stat_type": "points"
+                "stat_type": "points",
+                "period": "Q1"  // Optional
             },
             ...
         ]
@@ -365,6 +329,7 @@ def batch_fetch_stats():
                 player_id = prop['player_id']
                 game_date = prop['game_date']
                 stat_type = prop.get('stat_type', 'points').lower()
+                period = prop.get('period', None)
                 
                 # Get game log
                 game_log = get_game_for_date(player_id, game_date)
@@ -378,26 +343,65 @@ def batch_fetch_stats():
                     })
                     continue
                 
-                # Extract stat
-                stat_map = {
-                    'points': 'PTS',
-                    'rebounds': 'REB',
-                    'assists': 'AST',
-                    'steals': 'STL',
-                    'blocks': 'BLK',
-                    'threes': 'FG3M',
-                    'turnovers': 'TOV'
-                }
+                game_id = str(game_log.get('Game_ID', ''))
                 
-                stat_key = stat_map.get(stat_type, 'PTS')
-                actual_value = game_log.get(stat_key, 0)
+                # Handle period if specified
+                if period and period in ['Q1', 'Q2', 'Q3', 'Q4', '1H', '2H']:
+                    from quarter_stats_parser import QuarterStatsParser
+                    
+                    # Determine season
+                    date_obj = datetime.strptime(game_date, '%Y-%m-%d')
+                    if date_obj.month >= 10:
+                        season = f"{date_obj.year}-{str(date_obj.year + 1)[-2:]}"
+                    else:
+                        season = f"{date_obj.year - 1}-{str(date_obj.year)[-2:]}"
+                    
+                    parser = QuarterStatsParser()
+                    quarter_data = parser.get_quarter_stats(player_id, season, game_id)
+                    
+                    if quarter_data and period in quarter_data:
+                        period_stats = quarter_data[period]
+                        stat_map = {
+                            'points': 'PTS',
+                            'rebounds': 'REB',
+                            'assists': 'AST',
+                            'steals': 'STL',
+                            'blocks': 'BLK',
+                            'threes': 'FG3M',
+                            'turnovers': 'TO'
+                        }
+                        stat_key = stat_map.get(stat_type, 'PTS')
+                        actual_value = period_stats.get(stat_key, 0)
+                    else:
+                        results.append({
+                            'player_id': player_id,
+                            'game_date': game_date,
+                            'game_found': False,
+                            'error': f'No {period} stats found'
+                        })
+                        continue
+                else:
+                    # Full game stats
+                    stat_map = {
+                        'points': 'PTS',
+                        'rebounds': 'REB',
+                        'assists': 'AST',
+                        'steals': 'STL',
+                        'blocks': 'BLK',
+                        'threes': 'FG3M',
+                        'turnovers': 'TOV'
+                    }
+                    
+                    stat_key = stat_map.get(stat_type, 'PTS')
+                    actual_value = game_log.get(stat_key, 0)
                 
                 results.append({
                     'player_id': player_id,
                     'game_date': game_date,
                     'game_found': True,
                     'stat_type': stat_type,
-                    'actual_value': actual_value
+                    'actual_value': actual_value,
+                    'period': period
                 })
                 
             except Exception as e:
@@ -516,7 +520,7 @@ if __name__ == '__main__':
     print("\n📚 Available endpoints:")
     print("  GET  /api/players/search?q=jaden")
     print("  GET  /api/players/<id>")
-    print("  POST /api/stats/fetch-game")
+    print("  POST /api/stats/fetch-game (supports period parameter)")
     print("  POST /api/stats/batch-fetch")
     print("  GET  /api/health")
     print("\n" + "="*70 + "\n")
