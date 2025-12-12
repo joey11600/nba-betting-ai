@@ -210,7 +210,7 @@ def fetch_game_stats():
             'actual_value': actual_value,
             'stat_type': stat_type,
             'game_date': game_date,
-            'game_id': str(game_log.get('GAME_ID', '')),
+            'game_id': str(game_log.get('Game_ID', '')),  # FIXED: Use Game_ID (capital G, capital I)
             'all_stats': {
                 'PTS': game_log.get('PTS', 0),
                 'REB': game_log.get('REB', 0),
