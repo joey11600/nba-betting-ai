@@ -177,16 +177,108 @@ def fetch_game_stats():
         player_id = data['player_id']
         game_date = data['game_date']  # Format: "2024-12-10"
         stat_type = data.get('stat_type', 'points').lower()
+        period = data.get('period', None)
         
-        # Get the game log for this player on this date
+        # Get game log
         game_log = get_game_for_date(player_id, game_date)
-        
+
         if not game_log:
             return jsonify({
                 'success': True,
                 'game_found': False,
                 'error': f"No game found for player {player_id} on {game_date}"
             }), 404
+
+        # Get game_id from the log
+        game_id = str(game_log.get('Game_ID', ''))
+
+        # If period is specified, get quarter stats
+        if period and period in ['Q1', 'Q2', 'Q3', 'Q4', '1H', '2H']:
+            from quarter_stats_parser import QuarterStatsParser
+    
+            # Determine season
+            from datetime import datetime
+            date_obj = datetime.strptime(game_date, '%Y-%m-%d')
+            if date_obj.month >= 10:
+                season = f"{date_obj.year}-{str(date_obj.year + 1)[-2:]}"
+            else:
+                season = f"{date_obj.year - 1}-{str(date_obj.year)[-2:]}"
+    
+            # Get quarter stats
+            parser = QuarterStatsParser()
+            quarter_data = parser.get_quarter_stats(player_id, season, game_id)
+    
+            if not quarter_data or period not in quarter_data:
+                return jsonify({
+                    'success': True,
+                    'game_found': False,
+                    'error': f"No {period} stats found for this game"
+                }), 404
+    
+            # Get the period stats
+            period_stats = quarter_data[period]
+    
+            # Map stat types
+            stat_map = {
+                'points': 'PTS',
+                'rebounds': 'REB',
+                'assists': 'AST',
+                'steals': 'STL',
+                'blocks': 'BLK',
+                'threes': 'FG3M',
+                'turnovers': 'TO'
+            }
+    
+            stat_key = stat_map.get(stat_type, 'PTS')
+            actual_value = period_stats.get(stat_key, 0)
+    
+            return jsonify({
+                'success': True,
+                'game_found': True,
+                'actual_value': actual_value,
+                'stat_type': stat_type,
+                'game_date': game_date,
+                'game_id': game_id,
+                'period': period,
+                'all_stats': period_stats
+            })
+
+        # Otherwise, use full game stats (existing code)
+        stat_map = {
+            'points': 'PTS',
+            'rebounds': 'REB',
+            'assists': 'AST',
+            'steals': 'STL',
+            'blocks': 'BLK',
+            'threes': 'FG3M',
+            'turnovers': 'TOV'
+        }
+
+        stat_key = stat_map.get(stat_type, 'PTS')
+        actual_value = game_log.get(stat_key, 0)
+
+        return jsonify({
+            'success': True,
+            'game_found': True,
+            'actual_value': actual_value,
+            'stat_type': stat_type,
+            'game_date': game_date,
+            'game_id': game_id,
+            'all_stats': {
+                'PTS': game_log.get('PTS', 0),
+                'REB': game_log.get('REB', 0),
+                'AST': game_log.get('AST', 0),
+                'STL': game_log.get('STL', 0),
+                'BLK': game_log.get('BLK', 0),
+                'FG3M': game_log.get('FG3M', 0),
+                'TOV': game_log.get('TOV', 0),
+                'FGA': game_log.get('FGA', 0),
+                'FGM': game_log.get('FGM', 0),
+                'FG_PCT': game_log.get('FG_PCT', 0),
+                'MATCHUP': game_log.get('MATCHUP', ''),
+                'WL': game_log.get('WL', '')
+            }
+        })
         
         # Extract the requested stat
         stat_map = {
