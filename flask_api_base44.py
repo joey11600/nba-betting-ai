@@ -189,8 +189,8 @@ def fetch_game_stats():
             return jsonify({
                 'success': True,
                 'game_found': False,
-                'error': f"No game found for player {player_id} on {game_date}"
-            }), 404
+                'message': f"No game found for player {player_id} on {game_date}"
+            }), 200  # 200 = valid response, player just didn't play
 
         # Get game_id from the log
         game_id = str(game_log.get('Game_ID', ''))
@@ -211,11 +211,11 @@ def fetch_game_stats():
             quarter_data = parser.get_quarter_stats(player_id, season, game_id)
     
             if not quarter_data or period not in quarter_data:
-                return jsonify({
-                    'success': True,
-                    'game_found': False,
-                    'error': f"No {period} stats found for this game"
-                }), 404
+            return jsonify({
+                'success': True,
+                'game_found': False,
+                'message': f"No {period} stats found for this game"
+            }), 200  # 200 = valid response
     
             # Get the period stats
             period_stats = quarter_data[period]
