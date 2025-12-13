@@ -211,11 +211,11 @@ def fetch_game_stats():
             quarter_data = parser.get_quarter_stats(player_id, season, game_id)
     
             if not quarter_data or period not in quarter_data:
-            return jsonify({
-                'success': True,
-                'game_found': False,
-                'message': f"No {period} stats found for this game"
-            }), 200  # 200 = valid response
+                return jsonify({
+                    'success': True,
+                    'game_found': False,
+                    'message': f"No {period} stats found for this game"
+                }), 200  # 200 = valid response
     
             # Get the period stats
             period_stats = quarter_data[period]
@@ -255,10 +255,10 @@ def fetch_game_stats():
             'threes': 'FG3M',
             'turnovers': 'TOV'
         }
-
+        
         stat_key = stat_map.get(stat_type, 'PTS')
         actual_value = game_log.get(stat_key, 0)
-
+        
         return jsonify({
             'success': True,
             'game_found': True,
@@ -274,7 +274,7 @@ def fetch_game_stats():
                 'BLK': game_log.get('BLK', 0),
                 'FG3M': game_log.get('FG3M', 0),
                 'TOV': game_log.get('TOV', 0),
-                'FGA': game_log.get('FGA', 0),
+                'MIN': game_log.get('MIN', 0),
                 'FGM': game_log.get('FGM', 0),
                 'FG_PCT': game_log.get('FG_PCT', 0),
                 'MATCHUP': game_log.get('MATCHUP', ''),
