@@ -290,6 +290,262 @@ def fetch_game_stats():
         }), 500
 
 
+# =======================
+# ADD THIS TO YOUR flask_api_base44.py
+# Insert after line 290 (after fetch_game_stats endpoint)
+# =======================
+
+@app.route('/api/stats/player-stats', methods=['GET'])
+def get_player_stats():
+    """
+    Get recent game stats for a player
+    GET /api/stats/player-stats?player_id=1628973&game_count=15&stat_type=points&period=Q1
+    
+    Parameters:
+        - player_id: NBA player ID (required)
+        - game_count: Number of recent games (default: 15, max: 50)
+        - stat_type: points, rebounds, assists, etc. (default: points)
+        - period: Q1, Q2, Q3, Q4, 1H, 2H, or null for full game (optional)
+        - result: won, lost, push (optional - filter by result)
+        - game_type: regular, playoffs, all (default: all)
+    
+    Returns: {
+        "success": true,
+        "player_id": 1628973,
+        "player_name": "Jalen Brunson",
+        "stat_type": "points",
+        "period": "Q1",
+        "game_count": 15,
+        "games": [
+            {
+                "game_id": "0022500362",
+                "game_date": "2024-12-15",
+                "matchup": "NYK vs. LAL",
+                "result": "W",
+                "stat_value": 23,
+                "all_stats": {...}
+            },
+            ...
+        ],
+        "average": 24.5,
+        "median": 23.0,
+        "high": 35,
+        "low": 12,
+        "hit_rate": {  // If line is provided
+            "line": 22.5,
+            "hits": 9,
+            "misses": 6,
+            "rate": 0.60
+        }
+    }
+    """
+    try:
+        if not NBA_API_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'error': 'NBA API not available'
+            }), 500
+        
+        # Parse parameters
+        player_id = request.args.get('player_id', type=int)
+        game_count = min(int(request.args.get('game_count', 15)), 50)  # Max 50 games
+        stat_type = request.args.get('stat_type', 'points').lower()
+        period = request.args.get('period', None)  # Q1, Q2, Q3, Q4, 1H, 2H, or None
+        result_filter = request.args.get('result', None)  # won, lost, push
+        game_type = request.args.get('game_type', 'all').lower()  # regular, playoffs, all
+        line = request.args.get('line', type=float)  # Optional line for hit rate calculation
+        
+        if not player_id:
+            return jsonify({
+                'success': False,
+                'error': 'player_id parameter required'
+            }), 400
+        
+        # Get player info
+        player_info = players.find_player_by_id(player_id)
+        if not player_info:
+            return jsonify({
+                'success': False,
+                'error': 'Player not found'
+            }), 404
+        
+        player_name = player_info.get('full_name', 'Unknown')
+        
+        # Determine current season
+        now = datetime.now()
+        if now.month >= 10:
+            season = f"{now.year}-{str(now.year + 1)[-2:]}"
+        else:
+            season = f"{now.year - 1}-{str(now.year)[-2:]}"
+        
+        # Get game logs
+        time.sleep(0.6)  # Rate limiting
+        gamelog = playergamelog.PlayerGameLog(
+            player_id=player_id,
+            season=season,
+            season_type_all_star='Regular Season' if game_type == 'regular' else 'Playoffs' if game_type == 'playoffs' else 'All'
+        )
+        
+        df = gamelog.get_data_frames()[0]
+        
+        if df.empty:
+            return jsonify({
+                'success': True,
+                'player_id': player_id,
+                'player_name': player_name,
+                'games': [],
+                'message': 'No games found for this season'
+            })
+        
+        # Limit to requested game count
+        df = df.head(game_count)
+        
+        games_data = []
+        stat_values = []
+        
+        # Stat mapping
+        stat_map = {
+            'points': 'PTS',
+            'rebounds': 'REB',
+            'assists': 'AST',
+            'steals': 'STL',
+            'blocks': 'BLK',
+            'threes': 'FG3M',
+            'turnovers': 'TOV'
+        }
+        
+        stat_key = stat_map.get(stat_type, 'PTS')
+        
+        # If period is specified, we need to get quarter stats
+        if period and period in ['Q1', 'Q2', 'Q3', 'Q4', '1H', '2H']:
+            from quarter_stats_parser import QuarterStatsParser
+            
+            parser = QuarterStatsParser()
+            all_quarter_data = parser.get_quarter_stats(player_id, season)
+            
+            # Process each game
+            for _, row in df.iterrows():
+                game_id = str(row['Game_ID'])
+                game_date = row['GAME_DATE']
+                matchup = row['MATCHUP']
+                wl = row.get('WL', '')
+                
+                # Get quarter stats for this game
+                if game_id in all_quarter_data:
+                    game_quarters = all_quarter_data[game_id]
+                    
+                    if period in game_quarters:
+                        period_stats = game_quarters[period]
+                        
+                        # Map stat type to period stats
+                        period_stat_map = {
+                            'points': 'PTS',
+                            'rebounds': 'REB',
+                            'assists': 'AST',
+                            'steals': 'STL',
+                            'blocks': 'BLK',
+                            'threes': 'FG3M',
+                            'turnovers': 'TO'
+                        }
+                        
+                        period_stat_key = period_stat_map.get(stat_type, 'PTS')
+                        stat_value = period_stats.get(period_stat_key, 0)
+                        
+                        games_data.append({
+                            'game_id': game_id,
+                            'game_date': game_date,
+                            'matchup': matchup,
+                            'result': wl,
+                            'stat_value': stat_value,
+                            'period': period,
+                            'all_stats': period_stats
+                        })
+                        
+                        stat_values.append(stat_value)
+        
+        else:
+            # Full game stats
+            for _, row in df.iterrows():
+                stat_value = row.get(stat_key, 0)
+                
+                # Apply result filter if specified
+                if result_filter:
+                    wl = row.get('WL', '').lower()
+                    if result_filter == 'won' and wl != 'w':
+                        continue
+                    if result_filter == 'lost' and wl != 'l':
+                        continue
+                
+                games_data.append({
+                    'game_id': str(row['Game_ID']),
+                    'game_date': row['GAME_DATE'],
+                    'matchup': row['MATCHUP'],
+                    'result': row.get('WL', ''),
+                    'stat_value': float(stat_value),
+                    'all_stats': {
+                        'PTS': int(row.get('PTS', 0)),
+                        'REB': int(row.get('REB', 0)),
+                        'AST': int(row.get('AST', 0)),
+                        'STL': int(row.get('STL', 0)),
+                        'BLK': int(row.get('BLK', 0)),
+                        'TOV': int(row.get('TOV', 0)),
+                        'FGM': int(row.get('FGM', 0)),
+                        'FGA': int(row.get('FGA', 0)),
+                        'FG3M': int(row.get('FG3M', 0)),
+                        'FG_PCT': float(row.get('FG_PCT', 0)),
+                        'MIN': float(row.get('MIN', 0))
+                    }
+                })
+                
+                stat_values.append(float(stat_value))
+        
+        # Calculate statistics
+        avg_value = sum(stat_values) / len(stat_values) if stat_values else 0
+        sorted_values = sorted(stat_values)
+        median_value = sorted_values[len(sorted_values) // 2] if sorted_values else 0
+        high_value = max(stat_values) if stat_values else 0
+        low_value = min(stat_values) if stat_values else 0
+        
+        response = {
+            'success': True,
+            'player_id': player_id,
+            'player_name': player_name,
+            'stat_type': stat_type,
+            'period': period,
+            'game_count': len(games_data),
+            'games': games_data,
+            'average': round(avg_value, 2),
+            'median': round(median_value, 2),
+            'high': high_value,
+            'low': low_value
+        }
+        
+        # Calculate hit rate if line provided
+        if line is not None:
+            hits = sum(1 for v in stat_values if v > line)
+            misses = sum(1 for v in stat_values if v < line)
+            pushes = sum(1 for v in stat_values if v == line)
+            total = len(stat_values)
+            
+            response['hit_rate'] = {
+                'line': line,
+                'hits': hits,
+                'misses': misses,
+                'pushes': pushes,
+                'rate': round(hits / total, 3) if total > 0 else 0,
+                'total_games': total
+            }
+        
+        return jsonify(response)
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
+
+
 @app.route('/api/stats/batch-fetch', methods=['POST'])
 def batch_fetch_stats():
     """
