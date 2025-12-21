@@ -2,11 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 Flask API for NBA Stats - Base44 Integration
-Endpoints:
-- /api/players/search - Player search
-- /api/stats/fetch-game - Fetch game stats (used by fixMissingPropData)
-- /api/research/player - Research page endpoint (Base44)
-- /api/stats/batch-fetch - Batch stats fetching
 """
 
 from flask import Flask, request, jsonify
@@ -19,7 +14,7 @@ import pandas as pd
 # NBA API imports
 try:
     from nba_api.stats.static import players, teams
-    from nba_api.stats.endpoints import playergamelog, PlayerGameLog
+    from nba_api.stats.endpoints import playergamelog, PlayerGameLog, commonplayerinfo
     NBA_API_AVAILABLE = True
 except ImportError:
     NBA_API_AVAILABLE = False
@@ -28,9 +23,96 @@ except ImportError:
 app = Flask(__name__)
 CORS(app)
 
-# Player cache
+# Caches
 _player_cache = None
 _player_cache_time = None
+PLAYER_META_TTL_SECONDS = 24 * 60 * 60  # 24 hours
+_player_meta_cache = {}
+
+
+# =======================
+# PLAYER METADATA
+# =======================
+
+def get_player_metadata(player_id: int):
+    """Get player metadata with 24-hour cache"""
+    now = time.time()
+    
+    # Check cache
+    cached = _player_meta_cache.get(player_id)
+    if cached and (now - cached["ts"] < PLAYER_META_TTL_SECONDS):
+        return cached["data"]
+    
+    # Rate limit
+    time.sleep(0.6)
+    
+    try:
+        info = commonplayerinfo.CommonPlayerInfo(player_id=player_id)
+        common_df = info.common_player_info.get_data_frame()
+        headline_df = info.player_headline_stats.get_data_frame()
+        
+        if common_df.empty:
+            return None
+        
+        row = common_df.iloc[0].to_dict()
+        
+        # Normalize team (null for free agents)
+        team_id = row.get("TEAM_ID")
+        if not team_id or str(team_id).strip() in ["0", "None", ""]:
+            team = None
+        else:
+            team = {
+                "team_id": int(team_id),
+                "name": row.get("TEAM_NAME"),
+                "abbreviation": row.get("TEAM_ABBREVIATION"),
+                "city": row.get("TEAM_CITY"),
+                "code": row.get("TEAM_CODE")
+            }
+        
+        # Headline stats (season averages)
+        headline = None
+        if headline_df is not None and not headline_df.empty:
+            h = headline_df.iloc[0].to_dict()
+            headline = {
+                "timeframe": h.get("TimeFrame"),
+                "pts": h.get("PTS"),
+                "ast": h.get("AST"),
+                "reb": h.get("REB"),
+                "pie": h.get("PIE")
+            }
+        
+        meta = {
+            "player_id": int(row.get("PERSON_ID")) if row.get("PERSON_ID") else player_id,
+            "first_name": row.get("FIRST_NAME"),
+            "last_name": row.get("LAST_NAME"),
+            "full_name": row.get("DISPLAY_FIRST_LAST"),
+            "position": row.get("POSITION"),
+            "jersey": row.get("JERSEY"),
+            "height": row.get("HEIGHT"),
+            "weight": row.get("WEIGHT"),
+            "birthdate": row.get("BIRTHDATE"),
+            "school": row.get("SCHOOL"),
+            "country": row.get("COUNTRY"),
+            "season_exp": row.get("SEASON_EXP"),
+            "roster_status": row.get("ROSTERSTATUS"),
+            "from_year": row.get("FROM_YEAR"),
+            "to_year": row.get("TO_YEAR"),
+            "draft": {
+                "year": row.get("DRAFT_YEAR"),
+                "round": row.get("DRAFT_ROUND"),
+                "number": row.get("DRAFT_NUMBER")
+            },
+            "team": team,
+            "headline": headline
+        }
+        
+        # Cache it
+        _player_meta_cache[player_id] = {"ts": now, "data": meta}
+        return meta
+        
+    except Exception as e:
+        print(f"Error getting player metadata: {e}")
+        return None
 
 
 # =======================
@@ -121,17 +203,7 @@ def get_player(player_id):
 
 @app.route('/api/stats/fetch-game', methods=['POST'])
 def fetch_game_stats():
-    """
-    Fetch game stats for fixMissingPropData function
-    POST /api/stats/fetch-game
-    Body: {
-        "player_id": 1630596,
-        "player_name": "Jaden Ivey",
-        "game_date": "2024-12-10",
-        "stat_type": "points",
-        "period": "Q1"
-    }
-    """
+    """Fetch game stats for fixMissingPropData"""
     try:
         if not NBA_API_AVAILABLE:
             return jsonify({'success': False, 'error': 'NBA API not available'}), 500
@@ -142,7 +214,6 @@ def fetch_game_stats():
         stat_type = data.get('stat_type', 'points').lower()
         period = data.get('period', None)
         
-        # Get game log
         game_log = get_game_for_date(player_id, game_date)
 
         if not game_log:
@@ -154,7 +225,7 @@ def fetch_game_stats():
 
         game_id = str(game_log.get('Game_ID', ''))
 
-        # If period specified, get quarter stats
+        # Quarter stats
         if period and period in ['Q1', 'Q2', 'Q3', 'Q4', '1H', '2H']:
             from quarter_stats_parser import QuarterStatsParser
     
@@ -177,13 +248,8 @@ def fetch_game_stats():
             period_stats = quarter_data[period]
     
             stat_map = {
-                'points': 'PTS',
-                'rebounds': 'REB',
-                'assists': 'AST',
-                'steals': 'STL',
-                'blocks': 'BLK',
-                'threes': 'FG3M',
-                'turnovers': 'TO'
+                'points': 'PTS', 'rebounds': 'REB', 'assists': 'AST',
+                'steals': 'STL', 'blocks': 'BLK', 'threes': 'FG3M', 'turnovers': 'TO'
             }
     
             stat_key = stat_map.get(stat_type, 'PTS')
@@ -202,13 +268,8 @@ def fetch_game_stats():
 
         # Full game stats
         stat_map = {
-            'points': 'PTS',
-            'rebounds': 'REB',
-            'assists': 'AST',
-            'steals': 'STL',
-            'blocks': 'BLK',
-            'threes': 'FG3M',
-            'turnovers': 'TOV'
+            'points': 'PTS', 'rebounds': 'REB', 'assists': 'AST',
+            'steals': 'STL', 'blocks': 'BLK', 'threes': 'FG3M', 'turnovers': 'TOV'
         }
         
         stat_key = stat_map.get(stat_type, 'PTS')
@@ -246,15 +307,12 @@ def fetch_game_stats():
 
 @app.route('/api/research/player', methods=['GET'])
 def research_player():
-    """
-    Base44 Research page endpoint
-    GET /api/research/player?player_id=1628973&stat=pts&window=L15&game_result=any&season_filter=all&quarter=Q1
-    """
+    """Base44 Research page endpoint with player metadata"""
     try:
         if not NBA_API_AVAILABLE:
             return jsonify({'success': False, 'error': 'NBA API not available'}), 500
         
-        # Parse Base44 parameters
+        # Parse parameters
         player_id = request.args.get('player_id', type=int)
         stat = request.args.get('stat', 'pts')
         window = request.args.get('window', 'L15')
@@ -265,9 +323,12 @@ def research_player():
         if not player_id:
             return jsonify({'success': False, 'error': 'player_id required'}), 400
         
-        player_info = players.find_player_by_id(player_id)
-        if not player_info:
-            return jsonify({'success': False, 'error': 'Player not found'}), 404
+        # Get player metadata (non-fatal if fails)
+        player_meta = None
+        try:
+            player_meta = get_player_metadata(player_id)
+        except Exception as e:
+            print(f"Metadata fetch failed (non-fatal): {e}")
         
         # Determine season
         now = datetime.now()
@@ -294,6 +355,7 @@ def research_player():
         if df.empty:
             return jsonify({
                 'success': True,
+                'player': player_meta,
                 'summary': {'games': 0, 'avg': 0, 'median': 0, 'min': 0, 'max': 0, 'hit_rate': 0, 'std_dev': 0},
                 'chart': {'games': []},
                 'message': 'No games found'
@@ -315,22 +377,14 @@ def research_player():
         
         # Stat mapping
         stat_map = {
-            'pts': 'PTS',
-            'reb': 'REB',
-            'ast': 'AST',
-            'blk': 'BLK',
-            'stl': 'STL',
-            '3pm': 'FG3M',
-            'pra': ['PTS', 'REB', 'AST'],
-            'pr': ['PTS', 'REB'],
-            'ra': ['REB', 'AST'],
-            'pa': ['PTS', 'AST']
+            'pts': 'PTS', 'reb': 'REB', 'ast': 'AST', 'blk': 'BLK', 'stl': 'STL', '3pm': 'FG3M',
+            'pra': ['PTS', 'REB', 'AST'], 'pr': ['PTS', 'REB'], 'ra': ['REB', 'AST'], 'pa': ['PTS', 'AST']
         }
         
         stat_values = []
         chart_games = []
         
-        # Handle quarter stats if specified
+        # Quarter stats
         if quarter and quarter in ['Q1', 'Q2', 'Q3', 'Q4', '1H', '2H']:
             try:
                 from quarter_stats_parser import QuarterStatsParser
@@ -361,7 +415,6 @@ def research_player():
                         })
             except ImportError:
                 return jsonify({'success': False, 'error': 'Quarter stats not available'}), 500
-        
         else:
             # Full game stats
             for _, row in df.iterrows():
@@ -383,6 +436,7 @@ def research_player():
         if not stat_values:
             return jsonify({
                 'success': True,
+                'player': player_meta,
                 'summary': {'games': 0, 'avg': 0, 'median': 0, 'min': 0, 'max': 0, 'hit_rate': 0, 'std_dev': 0},
                 'chart': {'games': []},
                 'message': 'No data for selected filters'
@@ -401,6 +455,7 @@ def research_player():
         
         return jsonify({
             'success': True,
+            'player': player_meta,  # Player metadata with team, position, etc
             'summary': {
                 'games': len(stat_values),
                 'avg': round(avg_value, 1),
@@ -424,14 +479,13 @@ def research_player():
 
 @app.route('/api/stats/batch-fetch', methods=['POST'])
 def batch_fetch_stats():
-    """Fetch stats for multiple props at once"""
+    """Fetch stats for multiple props"""
     try:
         if not NBA_API_AVAILABLE:
             return jsonify({'success': False, 'error': 'NBA API not available'}), 500
         
         data = request.json
         props = data.get('props', [])
-        
         results = []
         
         for prop in props:
@@ -456,7 +510,6 @@ def batch_fetch_stats():
                 
                 game_id = str(game_log.get('Game_ID', ''))
                 
-                # Handle period if specified
                 if period and period in ['Q1', 'Q2', 'Q3', 'Q4', '1H', '2H']:
                     from quarter_stats_parser import QuarterStatsParser
                     
@@ -472,13 +525,8 @@ def batch_fetch_stats():
                     if quarter_data and period in quarter_data:
                         period_stats = quarter_data[period]
                         stat_map = {
-                            'points': 'PTS',
-                            'rebounds': 'REB',
-                            'assists': 'AST',
-                            'steals': 'STL',
-                            'blocks': 'BLK',
-                            'threes': 'FG3M',
-                            'turnovers': 'TO'
+                            'points': 'PTS', 'rebounds': 'REB', 'assists': 'AST',
+                            'steals': 'STL', 'blocks': 'BLK', 'threes': 'FG3M', 'turnovers': 'TO'
                         }
                         stat_key = stat_map.get(stat_type, 'PTS')
                         actual_value = period_stats.get(stat_key, 0)
@@ -492,15 +540,9 @@ def batch_fetch_stats():
                         continue
                 else:
                     stat_map = {
-                        'points': 'PTS',
-                        'rebounds': 'REB',
-                        'assists': 'AST',
-                        'steals': 'STL',
-                        'blocks': 'BLK',
-                        'threes': 'FG3M',
-                        'turnovers': 'TOV'
+                        'points': 'PTS', 'rebounds': 'REB', 'assists': 'AST',
+                        'steals': 'STL', 'blocks': 'BLK', 'threes': 'FG3M', 'turnovers': 'TOV'
                     }
-                    
                     stat_key = stat_map.get(stat_type, 'PTS')
                     actual_value = game_log.get(stat_key, 0)
                 
@@ -573,7 +615,7 @@ def get_game_for_date(player_id: int, game_date: str):
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
-    """Health check endpoint"""
+    """Health check"""
     return jsonify({
         'success': True,
         'status': 'healthy',
@@ -616,8 +658,8 @@ if __name__ == '__main__':
     print("\n📚 Available endpoints:")
     print("  GET  /api/players/search?q=jaden")
     print("  GET  /api/players/<id>")
-    print("  GET  /api/research/player (Base44 Research page)")
-    print("  POST /api/stats/fetch-game (fixMissingPropData)")
+    print("  GET  /api/research/player (with metadata)")
+    print("  POST /api/stats/fetch-game")
     print("  POST /api/stats/batch-fetch")
     print("  GET  /api/health")
     print("\n" + "="*70 + "\n")
