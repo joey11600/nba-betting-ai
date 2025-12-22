@@ -12,9 +12,11 @@ from datetime import datetime
 import pandas as pd
 import requests
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 ODDS_API_KEY = 'd17061497aa71558a734e90c25b1b0da'
 ODDS_API_BASE = 'https://api.the-odds-api.com/v4'
+LOCAL_TZ = ZoneInfo("America/New_York")  # Tampa is EST
 
 # NBA API imports
 try:
@@ -586,8 +588,8 @@ def batch_fetch_stats():
 def props_cheatsheet():
     """Get NBA player props with projections and ratings"""
     try:
-        # Parse parameters
-        date_param = request.args.get('date', datetime.now().strftime('%Y-%m-%d'))
+        # Parse parameters - use local timezone for "today"
+        date_param = request.args.get('date', datetime.now(LOCAL_TZ).strftime('%Y-%m-%d'))
         market_filter = request.args.get('market', 'all')
         
         # Map market filters to prop types
@@ -614,13 +616,16 @@ def props_cheatsheet():
         events_resp.raise_for_status()
         all_events = events_resp.json()
         
-        # Filter to target date in Python
+        # Filter to target date in LOCAL timezone
         target_date = datetime.strptime(date_param, '%Y-%m-%d').date()
         events = []
         for event in all_events:
             try:
-                event_date = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00')).date()
-                if event_date == target_date:
+                # Convert UTC to local timezone BEFORE comparing dates
+                commence_utc = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
+                commence_local = commence_utc.astimezone(LOCAL_TZ)
+                
+                if commence_local.date() == target_date:
                     events.append(event)
             except:
                 continue
