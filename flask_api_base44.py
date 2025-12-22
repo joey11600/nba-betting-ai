@@ -966,6 +966,7 @@ def root():
             'research_player': 'GET /api/research/player?player_id=1628973&stat=pts&window=L15',
             'fetch_game_stats': 'POST /api/stats/fetch-game',
             'batch_fetch': 'POST /api/stats/batch-fetch',
+            'cheatsheet': 'GET /api/props/cheatsheet?date=2024-12-22&market=all',
             'health': 'GET /api/health'
         }
     })
@@ -991,6 +992,7 @@ if __name__ == '__main__':
     print("  GET  /api/research/player (with metadata)")
     print("  POST /api/stats/fetch-game")
     print("  POST /api/stats/batch-fetch")
+    print("  GET  /api/props/cheatsheet")
     print("  GET  /api/health")
     print("\n" + "="*70 + "\n")
     
