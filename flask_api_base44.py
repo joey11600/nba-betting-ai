@@ -10,6 +10,11 @@ import traceback
 import time
 from datetime import datetime
 import pandas as pd
+import requests
+from datetime import datetime, timedelta
+
+ODDS_API_KEY = 'd17061497aa71558a734e90c25b1b0da'
+ODDS_API_BASE = 'https://api.the-odds-api.com/v4'
 
 # NBA API imports
 try:
@@ -571,6 +576,314 @@ def batch_fetch_stats():
         
     except Exception as e:
         return jsonify({'success': False, 'error': str(e), 'traceback': traceback.format_exc()}), 500
+
+# =======================
+# ADD TO flask_api_base44.py
+# Insert before the helper functions section
+# =======================
+
+@app.route('/api/props/cheatsheet', methods=['GET'])
+def props_cheatsheet():
+    """
+    Get today's NBA player props with projections and ratings
+    GET /api/props/cheatsheet?date=2024-12-22&market=all
+    """
+    try:
+        # Parse parameters
+        date_param = request.args.get('date', datetime.now().strftime('%Y-%m-%d'))
+        market_filter = request.args.get('market', 'all')
+        
+        # Map market filters to prop types
+        market_map = {
+            'pts': ['player_points'],
+            'reb': ['player_rebounds'],
+            'ast': ['player_assists'],
+            '3pm': ['player_threes'],
+            'blk': ['player_blocks'],
+            'stl': ['player_steals'],
+            'pra': ['player_points', 'player_rebounds', 'player_assists'],
+            'pr': ['player_points', 'player_rebounds'],
+            'ra': ['player_rebounds', 'player_assists'],
+            'all': ['player_points', 'player_rebounds', 'player_assists', 'player_threes', 'player_blocks', 'player_steals']
+        }
+        
+        markets = market_map.get(market_filter, market_map['all'])
+        
+        # Step 1: Get today's NBA events
+        events_url = f"{ODDS_API_BASE}/sports/basketball_nba/events"
+        events_params = {
+            'apiKey': ODDS_API_KEY,
+            'commenceTimeFrom': f"{date_param}T00:00:00Z",
+            'commenceTimeTo': f"{date_param}T23:59:59Z"
+        }
+        
+        events_resp = requests.get(events_url, params=events_params, timeout=10)
+        events_resp.raise_for_status()
+        events = events_resp.json()
+        
+        if not events:
+            return jsonify({'props': [], 'message': 'No games today'})
+        
+        # Step 2: Get props for each game
+        all_props = []
+        
+        for event in events[:5]:  # Limit to 5 games to stay under free tier
+            event_id = event['id']
+            home_team = event['home_team']
+            away_team = event['away_team']
+            
+            # Get odds for this event
+            odds_url = f"{ODDS_API_BASE}/sports/basketball_nba/events/{event_id}/odds"
+            odds_params = {
+                'apiKey': ODDS_API_KEY,
+                'regions': 'us',
+                'markets': ','.join(markets),
+                'oddsFormat': 'american'
+            }
+            
+            time.sleep(0.6)  # Rate limit
+            
+            try:
+                odds_resp = requests.get(odds_url, params=odds_params, timeout=10)
+                odds_resp.raise_for_status()
+                odds_data = odds_resp.json()
+                
+                # Parse props from bookmakers
+                if 'bookmakers' in odds_data:
+                    for bookmaker in odds_data['bookmakers']:
+                        # Prefer Hard Rock, but accept others
+                        bookmaker_key = bookmaker['key']
+                        
+                        for market in bookmaker['markets']:
+                            market_key = market['key']
+                            
+                            # Group outcomes by player
+                            players = {}
+                            for outcome in market['outcomes']:
+                                player_name = outcome.get('description', '')
+                                if not player_name:
+                                    continue
+                                
+                                if player_name not in players:
+                                    players[player_name] = {}
+                                
+                                players[player_name][outcome['name']] = {
+                                    'price': outcome['price'],
+                                    'point': outcome.get('point', 0)
+                                }
+                            
+                            # Create prop entries
+                            for player_name, outcomes in players.items():
+                                if 'Over' not in outcomes or 'Under' not in outcomes:
+                                    continue
+                                
+                                line = outcomes['Over']['point']
+                                over_odds = outcomes['Over']['price']
+                                
+                                # Determine player's team and opponent
+                                player_team = home_team  # Simplified - would need roster lookup
+                                opponent = away_team if player_team == home_team else home_team
+                                
+                                # Get player stats and calculate projection
+                                player_id = get_player_id_by_name(player_name)
+                                if not player_id:
+                                    continue
+                                
+                                stat_type_map = {
+                                    'player_points': 'points',
+                                    'player_rebounds': 'rebounds',
+                                    'player_assists': 'assists',
+                                    'player_threes': 'threes',
+                                    'player_blocks': 'blocks',
+                                    'player_steals': 'steals'
+                                }
+                                
+                                stat_type = stat_type_map.get(market_key, 'points')
+                                projection_data = calculate_projection(player_id, stat_type)
+                                
+                                if not projection_data:
+                                    projection_data = {
+                                        'projection': line,
+                                        'hit_rates': {'l5': 0, 'l10': 0, 'l15': 0, 'this_season': 0}
+                                    }
+                                
+                                projection = projection_data['projection']
+                                hit_rates = projection_data['hit_rates']
+                                
+                                # Calculate rating (0-100)
+                                rating = calculate_rating(
+                                    projection=projection,
+                                    line=line,
+                                    hit_rates=hit_rates,
+                                    odds=over_odds
+                                )
+                                
+                                # Get stat label
+                                stat_labels = {
+                                    'player_points': 'Points',
+                                    'player_rebounds': 'Rebounds',
+                                    'player_assists': 'Assists',
+                                    'player_threes': '3-Pointers',
+                                    'player_blocks': 'Blocks',
+                                    'player_steals': 'Steals'
+                                }
+                                
+                                prop = {
+                                    'prop_id': f"{event_id}_{player_name}_{market_key}",
+                                    'player': {
+                                        'player_id': player_id,
+                                        'full_name': player_name,
+                                        'player_image_url': f"https://cdn.nba.com/headshots/nba/latest/260x190/{player_id}.png",
+                                        'position': 'G',  # Would need lookup
+                                        'team': get_team_abbr(player_team),
+                                        'opponent': get_team_abbr(opponent)
+                                    },
+                                    'line': line,
+                                    'stat_label': stat_labels.get(market_key, 'Points'),
+                                    'projection': projection,
+                                    'projection_diff': round(projection - line, 1),
+                                    'rating': rating,
+                                    'hit_rates': hit_rates,
+                                    'bookmaker': bookmaker['title']
+                                }
+                                
+                                all_props.append(prop)
+            
+            except Exception as e:
+                print(f"Error fetching odds for event {event_id}: {e}")
+                continue
+        
+        # Sort by rating (highest first)
+        all_props.sort(key=lambda x: x['rating'], reverse=True)
+        
+        return jsonify({
+            'props': all_props[:50],  # Top 50 props
+            'date': date_param,
+            'market': market_filter
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
+
+
+def get_player_id_by_name(player_name):
+    """Get player ID from name using nba_api"""
+    try:
+        all_players = players.get_players()
+        for player in all_players:
+            if player['full_name'].lower() == player_name.lower():
+                return player['id']
+        return None
+    except:
+        return None
+
+
+def calculate_projection(player_id, stat_type):
+    """Calculate weighted projection and hit rates from recent games"""
+    try:
+        # Determine current season
+        now = datetime.now()
+        if now.month >= 10:
+            season = f"{now.year}-{str(now.year + 1)[-2:]}"
+        else:
+            season = f"{now.year - 1}-{str(now.year)[-2:]}"
+        
+        # Get recent games
+        time.sleep(0.6)
+        gamelog = playergamelog.PlayerGameLog(player_id=player_id, season=season)
+        df = gamelog.get_data_frames()[0]
+        
+        if df.empty:
+            return None
+        
+        # Map stat types
+        stat_map = {
+            'points': 'PTS',
+            'rebounds': 'REB',
+            'assists': 'AST',
+            'threes': 'FG3M',
+            'blocks': 'BLK',
+            'steals': 'STL'
+        }
+        
+        stat_key = stat_map.get(stat_type, 'PTS')
+        
+        # Calculate weighted average (more recent = more weight)
+        last_15 = df.head(15)
+        values = last_15[stat_key].tolist()
+        
+        # Weighted average: recent games weighted 2x
+        weights = [2.0 if i < 5 else 1.0 for i in range(len(values))]
+        projection = sum(v * w for v, w in zip(values, weights)) / sum(weights)
+        
+        # Calculate hit rates for different windows
+        def hit_rate(games, line):
+            if not games:
+                return 0
+            hits = sum(1 for v in games if v > line)
+            return round((hits / len(games)) * 100)
+        
+        # Use projection as line for hit rate calculation
+        line = projection
+        
+        hit_rates = {
+            'l5': hit_rate(values[:5], line),
+            'l10': hit_rate(values[:10], line),
+            'l15': hit_rate(values[:15], line),
+            'this_season': hit_rate(values, line)
+        }
+        
+        return {
+            'projection': round(projection, 1),
+            'hit_rates': hit_rates
+        }
+        
+    except Exception as e:
+        print(f"Error calculating projection: {e}")
+        return None
+
+
+def calculate_rating(projection, line, hit_rates, odds):
+    """Calculate 0-100 rating for a prop"""
+    # Factor 1: Edge (projection vs line) - 40 points
+    edge = projection - line
+    edge_score = min(40, max(0, (edge / line) * 100 + 20)) if line > 0 else 20
+    
+    # Factor 2: Hit rate average - 40 points
+    avg_hit_rate = (hit_rates['l5'] + hit_rates['l10'] + hit_rates['l15']) / 3
+    hit_score = min(40, (avg_hit_rate / 100) * 40)
+    
+    # Factor 3: Odds value - 20 points
+    # Better odds = higher score (American odds)
+    if odds < 0:
+        odds_score = max(0, 20 - abs(odds) / 10)
+    else:
+        odds_score = min(20, odds / 20)
+    
+    total = edge_score + hit_score + odds_score
+    return round(min(100, max(0, total)))
+
+
+def get_team_abbr(team_name):
+    """Convert full team name to abbreviation"""
+    abbr_map = {
+        'Atlanta Hawks': 'ATL', 'Boston Celtics': 'BOS', 'Brooklyn Nets': 'BKN',
+        'Charlotte Hornets': 'CHA', 'Chicago Bulls': 'CHI', 'Cleveland Cavaliers': 'CLE',
+        'Dallas Mavericks': 'DAL', 'Denver Nuggets': 'DEN', 'Detroit Pistons': 'DET',
+        'Golden State Warriors': 'GSW', 'Houston Rockets': 'HOU', 'Indiana Pacers': 'IND',
+        'LA Clippers': 'LAC', 'Los Angeles Clippers': 'LAC', 'Los Angeles Lakers': 'LAL',
+        'Memphis Grizzlies': 'MEM', 'Miami Heat': 'MIA', 'Milwaukee Bucks': 'MIL',
+        'Minnesota Timberwolves': 'MIN', 'New Orleans Pelicans': 'NOP', 'New York Knicks': 'NYK',
+        'Oklahoma City Thunder': 'OKC', 'Orlando Magic': 'ORL', 'Philadelphia 76ers': 'PHI',
+        'Phoenix Suns': 'PHX', 'Portland Trail Blazers': 'POR', 'Sacramento Kings': 'SAC',
+        'San Antonio Spurs': 'SAS', 'Toronto Raptors': 'TOR', 'Utah Jazz': 'UTA',
+        'Washington Wizards': 'WAS'
+    }
+    return abbr_map.get(team_name, 'NBA')
 
 
 # =======================
