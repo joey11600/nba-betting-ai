@@ -42,6 +42,11 @@ _props_cache = {}  # "date_market" -> {"props": [...], "timestamp": float}
 _props_cache_lock = threading.Lock()
 PROPS_CACHE_TTL = 6 * 60 * 60  # 6 hours
 
+# Raw Odds API cache (even if processing fails, we don't re-fetch)
+_odds_raw_cache = {}  # "date" -> {"events": [...], "odds": {...}, "timestamp": float}
+_odds_raw_cache_lock = threading.Lock()
+ODDS_RAW_CACHE_TTL = 6 * 60 * 60  # 6 hours
+
 
 # =======================
 # PLAYER METADATA
@@ -590,6 +595,67 @@ def batch_fetch_stats():
 # Add this entire section to flask_api_base44.py
 # =======================
 
+def fetch_raw_odds_data(date_param, markets):
+    """Fetch raw odds data from Odds API - this gets cached separately"""
+    # Step 1: Get ALL upcoming NBA events
+    events_url = f"{ODDS_API_BASE}/sports/basketball_nba/events"
+    events_params = {'apiKey': ODDS_API_KEY}
+    
+    events_resp = requests.get(events_url, params=events_params, timeout=10)
+    events_resp.raise_for_status()
+    all_events = events_resp.json()
+    
+    # Filter to target date in LOCAL timezone
+    target_date = datetime.strptime(date_param, '%Y-%m-%d').date()
+    events = []
+    for event in all_events:
+        try:
+            commence_utc = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
+            commence_local = commence_utc.astimezone(LOCAL_TZ)
+            
+            if commence_local.date() == target_date:
+                events.append(event)
+        except:
+            continue
+    
+    # Step 2: Fetch odds for each event
+    odds_by_event = {}
+    
+    for event in events[:6]:  # Limit to 6 games
+        event_id = event['id']
+        home_team = event['home_team']
+        away_team = event['away_team']
+        
+        odds_url = f"{ODDS_API_BASE}/sports/basketball_nba/events/{event_id}/odds"
+        odds_params = {
+            'apiKey': ODDS_API_KEY,
+            'regions': 'us',
+            'markets': ','.join(markets),
+            'oddsFormat': 'american'
+        }
+        
+        time.sleep(0.6)
+        
+        try:
+            odds_resp = requests.get(odds_url, params=odds_params, timeout=10)
+            odds_resp.raise_for_status()
+            odds_data = odds_resp.json()
+            print(f"✓ Got odds for {home_team} vs {away_team}")
+            
+            odds_by_event[event_id] = {
+                'odds_data': odds_data,
+                'home_team': home_team,
+                'away_team': away_team
+            }
+        except Exception as e:
+            print(f"Error fetching odds for event {event_id}: {e}")
+            continue
+    
+    return {
+        'events': events,
+        'odds': odds_by_event
+    }
+
 @app.route('/api/props/cheatsheet', methods=['GET'])
 def props_cheatsheet():
     """Get NBA player props with projections and ratings"""
@@ -627,27 +693,33 @@ def props_cheatsheet():
         
         markets = market_map.get(market_filter, market_map['all'])
         
-        # Step 1: Get ALL upcoming NBA events (no date filter)
-        events_url = f"{ODDS_API_BASE}/sports/basketball_nba/events"
-        events_params = {'apiKey': ODDS_API_KEY}
+        # Check raw odds cache (TIER 1 CACHE - prevents burning API credits)
+        raw_cache_key = date_param
+        events_and_odds = None
         
-        events_resp = requests.get(events_url, params=events_params, timeout=10)
-        events_resp.raise_for_status()
-        all_events = events_resp.json()
+        with _odds_raw_cache_lock:
+            if raw_cache_key in _odds_raw_cache:
+                cached_raw = _odds_raw_cache[raw_cache_key]
+                if time.time() - cached_raw['timestamp'] < ODDS_RAW_CACHE_TTL:
+                    print(f"✓ Using cached raw odds data for {raw_cache_key}")
+                    events_and_odds = cached_raw['data']
         
-        # Filter to target date in LOCAL timezone
-        target_date = datetime.strptime(date_param, '%Y-%m-%d').date()
-        events = []
-        for event in all_events:
-            try:
-                # Convert UTC to local timezone BEFORE comparing dates
-                commence_utc = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
-                commence_local = commence_utc.astimezone(LOCAL_TZ)
-                
-                if commence_local.date() == target_date:
-                    events.append(event)
-            except:
-                continue
+        # If no cached raw data, fetch from Odds API
+        if not events_and_odds:
+            print("⏳ Fetching from Odds API (this will be cached)...")
+            events_and_odds = fetch_raw_odds_data(date_param, markets)
+            
+            # CACHE IMMEDIATELY (even if processing fails later)
+            with _odds_raw_cache_lock:
+                _odds_raw_cache[raw_cache_key] = {
+                    'data': events_and_odds,
+                    'timestamp': time.time()
+                }
+            print(f"✓ Cached raw odds data for {raw_cache_key}")
+        
+        # Extract events from cached data
+        events = events_and_odds['events']
+        odds_by_event = events_and_odds['odds']
         
         if not events:
             return jsonify({
@@ -657,101 +729,81 @@ def props_cheatsheet():
                 'market': market_filter
             })
         
-        # PHASE 1: Collect all raw props from Odds API (NO projections yet)
-        print("Phase 1: Fetching props from Odds API...")
+        # PHASE 1: Build raw props from cached odds data
+        print("Phase 1: Building props from cached odds...")
         raw_props = []
         unique_players = {}
         
-        for event in events[:10]:
-            event_id = event['id']
-            home_team = event['home_team']
-            away_team = event['away_team']
+        for event_id, event_odds in odds_by_event.items():
+            odds_data = event_odds['odds_data']
+            home_team = event_odds['home_team']
+            away_team = event_odds['away_team']
             
-            odds_url = f"{ODDS_API_BASE}/sports/basketball_nba/events/{event_id}/odds"
-            odds_params = {
-                'apiKey': ODDS_API_KEY,
-                'regions': 'us',
-                'markets': ','.join(markets),
-                'oddsFormat': 'american'
-            }
-            
-            time.sleep(0.6)
-            
-            try:
-                odds_resp = requests.get(odds_url, params=odds_params, timeout=10)
-                odds_resp.raise_for_status()
-                odds_data = odds_resp.json()
-                print(f"✓ Got odds for {home_team} vs {away_team}")
-                
-                if 'bookmakers' not in odds_data:
-                    continue
-                
-                for bookmaker in odds_data['bookmakers']:
-                    for market in bookmaker.get('markets', []):
-                        market_key = market['key']
-                        
-                        players_in_market = {}
-                        for outcome in market.get('outcomes', []):
-                            player_name = outcome.get('description', '')
-                            if not player_name:
-                                continue
-                            
-                            if player_name not in players_in_market:
-                                players_in_market[player_name] = {}
-                            
-                            players_in_market[player_name][outcome['name']] = {
-                                'price': outcome['price'],
-                                'point': outcome.get('point', 0)
-                            }
-                        
-                        for player_name, outcomes in players_in_market.items():
-                            if 'Over' not in outcomes or 'Under' not in outcomes:
-                                continue
-                            
-                            line = outcomes['Over']['point']
-                            over_odds = outcomes['Over']['price']
-                            
-                            stat_type_map = {
-                                'player_points': 'points',
-                                'player_rebounds': 'rebounds',
-                                'player_assists': 'assists',
-                                'player_threes': 'threes',
-                                'player_blocks': 'blocks',
-                                'player_steals': 'steals'
-                            }
-                            stat_type = stat_type_map.get(market_key, 'points')
-                            
-                            if player_name not in unique_players:
-                                unique_players[player_name] = {
-                                    'player_id': None,
-                                    'stat_types': set()
-                                }
-                            unique_players[player_name]['stat_types'].add(stat_type)
-                            
-                            stat_labels = {
-                                'player_points': 'Points',
-                                'player_rebounds': 'Rebounds',
-                                'player_assists': 'Assists',
-                                'player_threes': '3-Pointers',
-                                'player_blocks': 'Blocks',
-                                'player_steals': 'Steals'
-                            }
-                            
-                            raw_props.append({
-                                'player_name': player_name,
-                                'stat_type': stat_type,
-                                'market_key': market_key,
-                                'line': line,
-                                'over_odds': over_odds,
-                                'stat_label': stat_labels.get(market_key, 'Points'),
-                                'home_team': home_team,
-                                'away_team': away_team,
-                                'bookmaker': bookmaker['title']
-                            })
-            
-            except Exception as e:
-                print(f"Error fetching odds for event {event_id}: {e}")
+            if 'bookmakers' not in odds_data:
                 continue
+            
+            for bookmaker in odds_data['bookmakers']:
+                for market in bookmaker.get('markets', []):
+                    market_key = market['key']
+                    
+                    players_in_market = {}
+                    for outcome in market.get('outcomes', []):
+                        player_name = outcome.get('description', '')
+                        if not player_name:
+                            continue
+                        
+                        if player_name not in players_in_market:
+                            players_in_market[player_name] = {}
+                        
+                        players_in_market[player_name][outcome['name']] = {
+                            'price': outcome['price'],
+                            'point': outcome.get('point', 0)
+                        }
+                    
+                    for player_name, outcomes in players_in_market.items():
+                        if 'Over' not in outcomes or 'Under' not in outcomes:
+                            continue
+                        
+                        line = outcomes['Over']['point']
+                        over_odds = outcomes['Over']['price']
+                        
+                        stat_type_map = {
+                            'player_points': 'points',
+                            'player_rebounds': 'rebounds',
+                            'player_assists': 'assists',
+                            'player_threes': 'threes',
+                            'player_blocks': 'blocks',
+                            'player_steals': 'steals'
+                        }
+                        stat_type = stat_type_map.get(market_key, 'points')
+                        
+                        if player_name not in unique_players:
+                            unique_players[player_name] = {
+                                'player_id': None,
+                                'stat_types': set()
+                            }
+                        unique_players[player_name]['stat_types'].add(stat_type)
+                        
+                        stat_labels = {
+                            'player_points': 'Points',
+                            'player_rebounds': 'Rebounds',
+                            'player_assists': 'Assists',
+                            'player_threes': '3-Pointers',
+                            'player_blocks': 'Blocks',
+                            'player_steals': 'Steals'
+                        }
+                        
+                        raw_props.append({
+                            'player_name': player_name,
+                            'stat_type': stat_type,
+                            'market_key': market_key,
+                            'line': line,
+                            'over_odds': over_odds,
+                            'stat_label': stat_labels.get(market_key, 'Points'),
+                            'home_team': home_team,
+                            'away_team': away_team,
+                            'bookmaker': bookmaker['title']
+                        })
         
         print(f"✓ Collected {len(raw_props)} raw props from {len(unique_players)} unique players")
         
