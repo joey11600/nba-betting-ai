@@ -657,15 +657,16 @@ def props_cheatsheet():
                 'market': market_filter
             })
         
-        # Step 2: Get props for each game
-        all_props = []
+        # PHASE 1: Collect all raw props from Odds API (NO projections yet)
+        print("Phase 1: Fetching props from Odds API...")
+        raw_props = []
+        unique_players = {}
         
-        for event in events[:10]:  # Process up to 10 games
+        for event in events[:10]:
             event_id = event['id']
             home_team = event['home_team']
             away_team = event['away_team']
             
-            # Get odds for this event
             odds_url = f"{ODDS_API_BASE}/sports/basketball_nba/events/{event_id}/odds"
             odds_params = {
                 'apiKey': ODDS_API_KEY,
@@ -674,7 +675,7 @@ def props_cheatsheet():
                 'oddsFormat': 'american'
             }
             
-            time.sleep(0.6)  # Rate limit
+            time.sleep(0.6)
             
             try:
                 odds_resp = requests.get(odds_url, params=odds_params, timeout=10)
@@ -682,45 +683,34 @@ def props_cheatsheet():
                 odds_data = odds_resp.json()
                 print(f"✓ Got odds for {home_team} vs {away_team}")
                 
-                # Parse props from bookmakers
                 if 'bookmakers' not in odds_data:
                     continue
                 
                 for bookmaker in odds_data['bookmakers']:
-                    bookmaker_key = bookmaker['key']
-                    
                     for market in bookmaker.get('markets', []):
                         market_key = market['key']
                         
-                        # Group outcomes by player
-                        players = {}
+                        players_in_market = {}
                         for outcome in market.get('outcomes', []):
                             player_name = outcome.get('description', '')
                             if not player_name:
                                 continue
                             
-                            if player_name not in players:
-                                players[player_name] = {}
+                            if player_name not in players_in_market:
+                                players_in_market[player_name] = {}
                             
-                            players[player_name][outcome['name']] = {
+                            players_in_market[player_name][outcome['name']] = {
                                 'price': outcome['price'],
                                 'point': outcome.get('point', 0)
                             }
                         
-                        # Create prop entries
-                        for player_name, outcomes in players.items():
+                        for player_name, outcomes in players_in_market.items():
                             if 'Over' not in outcomes or 'Under' not in outcomes:
                                 continue
                             
                             line = outcomes['Over']['point']
                             over_odds = outcomes['Over']['price']
                             
-                            # Get player ID
-                            player_id = get_player_id_by_name(player_name)
-                            if not player_id:
-                                player_id = abs(hash(player_name)) % 10000000
-                            
-                            # Get stat type
                             stat_type_map = {
                                 'player_points': 'points',
                                 'player_rebounds': 'rebounds',
@@ -729,28 +719,15 @@ def props_cheatsheet():
                                 'player_blocks': 'blocks',
                                 'player_steals': 'steals'
                             }
-                            
                             stat_type = stat_type_map.get(market_key, 'points')
-                            projection_data = calculate_projection(player_id, stat_type)
                             
-                            if not projection_data:
-                                projection_data = {
-                                    'projection': line,
-                                    'hit_rates': {'l5': 50, 'l10': 50, 'l15': 50, 'this_season': 50}
+                            if player_name not in unique_players:
+                                unique_players[player_name] = {
+                                    'player_id': None,
+                                    'stat_types': set()
                                 }
+                            unique_players[player_name]['stat_types'].add(stat_type)
                             
-                            projection = projection_data['projection']
-                            hit_rates = projection_data['hit_rates']
-                            
-                            # Calculate rating
-                            rating = calculate_rating(
-                                projection=projection,
-                                line=line,
-                                hit_rates=hit_rates,
-                                odds=over_odds
-                            )
-                            
-                            # Get stat label
                             stat_labels = {
                                 'player_points': 'Points',
                                 'player_rebounds': 'Rebounds',
@@ -760,38 +737,111 @@ def props_cheatsheet():
                                 'player_steals': 'Steals'
                             }
                             
-                            # Determine opponent
-                            opponent = away_team if home_team in player_name else home_team
-                            
-                            prop = {
-                                'prop_id': f"{event_id}_{player_name.replace(' ', '_')}_{market_key}",
-                                'player': {
-                                    'player_id': player_id,
-                                    'full_name': player_name,
-                                    'player_image_url': f"https://cdn.nba.com/headshots/nba/latest/260x190/{player_id}.png",
-                                    'position': 'G',
-                                    'team': get_team_abbr(home_team),
-                                    'opponent': get_team_abbr(opponent)
-                                },
+                            raw_props.append({
+                                'player_name': player_name,
+                                'stat_type': stat_type,
+                                'market_key': market_key,
                                 'line': line,
+                                'over_odds': over_odds,
                                 'stat_label': stat_labels.get(market_key, 'Points'),
-                                'projection': projection,
-                                'projection_diff': round(projection - line, 1),
-                                'rating': rating,
-                                'hit_rates': hit_rates,
+                                'home_team': home_team,
+                                'away_team': away_team,
                                 'bookmaker': bookmaker['title']
-                            }
-                            
-                            all_props.append(prop)
+                            })
             
             except Exception as e:
                 print(f"Error fetching odds for event {event_id}: {e}")
                 continue
         
-        # Sort by rating
+        print(f"✓ Collected {len(raw_props)} raw props from {len(unique_players)} unique players")
+        
+        # PHASE 2: Batch calculate projections
+        print("Phase 2: Calculating projections...")
+        projections_map = {}
+        
+        for idx, (player_name, player_data) in enumerate(unique_players.items(), 1):
+            print(f"  [{idx}/{len(unique_players)}] {player_name}")
+            
+            player_id = get_player_id_by_name(player_name)
+            if not player_id:
+                player_id = abs(hash(player_name)) % 10000000
+            
+            player_data['player_id'] = player_id
+            
+            for stat_type in player_data['stat_types']:
+                projection_key = (player_name, stat_type)
+                
+                if projection_key in projections_map:
+                    continue
+                
+                projection_data = calculate_projection(player_id, stat_type)
+                
+                if not projection_data:
+                    projection_data = {
+                        'projection': 0,
+                        'hit_rates': {'l5': 50, 'l10': 50, 'l15': 50, 'this_season': 50}
+                    }
+                
+                projections_map[projection_key] = projection_data
+        
+        print(f"✓ Calculated {len(projections_map)} unique projections")
+        
+        # PHASE 3: Build final props
+        print("Phase 3: Building final props...")
+        all_props = []
+        
+        for raw_prop in raw_props:
+            player_name = raw_prop['player_name']
+            stat_type = raw_prop['stat_type']
+            line = raw_prop['line']
+            over_odds = raw_prop['over_odds']
+            
+            projection_key = (player_name, stat_type)
+            projection_data = projections_map.get(projection_key, {
+                'projection': line,
+                'hit_rates': {'l5': 50, 'l10': 50, 'l15': 50, 'this_season': 50}
+            })
+            
+            projection = projection_data['projection']
+            hit_rates = projection_data['hit_rates']
+            
+            rating = calculate_rating(
+                projection=projection,
+                line=line,
+                hit_rates=hit_rates,
+                odds=over_odds
+            )
+            
+            player_info = unique_players.get(player_name, {})
+            player_id = player_info.get('player_id', abs(hash(player_name)) % 10000000)
+            
+            opponent = raw_prop['away_team']
+            
+            prop = {
+                'prop_id': f"{player_name.replace(' ', '_')}_{raw_prop['market_key']}",
+                'player': {
+                    'player_id': player_id,
+                    'full_name': player_name,
+                    'player_image_url': f"https://cdn.nba.com/headshots/nba/latest/260x190/{player_id}.png",
+                    'position': 'G',
+                    'team': get_team_abbr(raw_prop['home_team']),
+                    'opponent': get_team_abbr(opponent)
+                },
+                'line': line,
+                'stat_label': raw_prop['stat_label'],
+                'projection': projection,
+                'projection_diff': round(projection - line, 1),
+                'rating': rating,
+                'hit_rates': hit_rates,
+                'bookmaker': raw_prop['bookmaker']
+            }
+            
+            all_props.append(prop)
+        
         all_props.sort(key=lambda x: x['rating'], reverse=True)
         
-        # Build response
+        print(f"✓ Built {len(all_props)} final props")
+        
         response_data = {
             'props': all_props[:50],
             'date': date_param,
@@ -800,7 +850,6 @@ def props_cheatsheet():
             'total_props': len(all_props)
         }
         
-        # Cache the result
         with _props_cache_lock:
             _props_cache[cache_key] = {
                 'data': response_data,
@@ -1034,3 +1083,10 @@ if __name__ == '__main__':
     
     debug_mode = os.environ.get('FLASK_ENV') != 'production'
     app.run(host='0.0.0.0', port=port, debug=debug_mode)
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
