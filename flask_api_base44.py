@@ -13,6 +13,7 @@ import pandas as pd
 import requests
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+import threading
 
 ODDS_API_KEY = 'd17061497aa71558a734e90c25b1b0da'
 ODDS_API_BASE = 'https://api.the-odds-api.com/v4'
@@ -35,6 +36,11 @@ _player_cache = None
 _player_cache_time = None
 PLAYER_META_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 _player_meta_cache = {}
+
+# Props cache (prevents timeout on repeated requests)
+_props_cache = {}  # "date_market" -> {"props": [...], "timestamp": float}
+_props_cache_lock = threading.Lock()
+PROPS_CACHE_TTL = 6 * 60 * 60  # 6 hours
 
 
 # =======================
@@ -592,6 +598,19 @@ def props_cheatsheet():
         date_param = request.args.get('date', datetime.now(LOCAL_TZ).strftime('%Y-%m-%d'))
         market_filter = request.args.get('market', 'all')
         
+        # Check cache first
+        cache_key = f"{date_param}_{market_filter}"
+        
+        with _props_cache_lock:
+            if cache_key in _props_cache:
+                cached_data = _props_cache[cache_key]
+                # Check if cache is still valid
+                if time.time() - cached_data['timestamp'] < PROPS_CACHE_TTL:
+                    print(f"✓ Serving cached props for {cache_key}")
+                    return jsonify(cached_data['data'])
+        
+        print(f"⏳ Calculating props for {cache_key} (this will take ~2 minutes)")
+        
         # Map market filters to prop types
         market_map = {
             'pts': ['player_points'],
@@ -641,7 +660,7 @@ def props_cheatsheet():
         # Step 2: Get props for each game
         all_props = []
         
-        for event in events[:3]:  # Process up to 3 games (faster)
+        for event in events[:10]:  # Process up to 10 games
             event_id = event['id']
             home_team = event['home_team']
             away_team = event['away_team']
@@ -712,12 +731,13 @@ def props_cheatsheet():
                             }
                             
                             stat_type = stat_type_map.get(market_key, 'points')
+                            projection_data = calculate_projection(player_id, stat_type)
                             
-                            # TEMP: Skip projections to fix timeout
-                            projection_data = {
-                                'projection': line,
-                                'hit_rates': {'l5': 50, 'l10': 50, 'l15': 50, 'this_season': 50}
-                            }
+                            if not projection_data:
+                                projection_data = {
+                                    'projection': line,
+                                    'hit_rates': {'l5': 50, 'l10': 50, 'l15': 50, 'this_season': 50}
+                                }
                             
                             projection = projection_data['projection']
                             hit_rates = projection_data['hit_rates']
@@ -771,13 +791,24 @@ def props_cheatsheet():
         # Sort by rating
         all_props.sort(key=lambda x: x['rating'], reverse=True)
         
-        return jsonify({
+        # Build response
+        response_data = {
             'props': all_props[:50],
             'date': date_param,
             'market': market_filter,
             'total_events': len(events),
             'total_props': len(all_props)
-        })
+        }
+        
+        # Cache the result
+        with _props_cache_lock:
+            _props_cache[cache_key] = {
+                'data': response_data,
+                'timestamp': time.time()
+            }
+        
+        print(f"✓ Cached props for {cache_key}")
+        return jsonify(response_data)
         
     except Exception as e:
         return jsonify({
