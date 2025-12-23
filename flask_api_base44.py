@@ -641,7 +641,7 @@ def props_cheatsheet():
         # Step 2: Get props for each game
         all_props = []
         
-        for event in events[:10]:  # Process up to 10 games
+        for event in events[:3]:  # Process up to 3 games (faster)
             event_id = event['id']
             home_team = event['home_team']
             away_team = event['away_team']
@@ -661,6 +661,7 @@ def props_cheatsheet():
                 odds_resp = requests.get(odds_url, params=odds_params, timeout=10)
                 odds_resp.raise_for_status()
                 odds_data = odds_resp.json()
+                print(f"✓ Got odds for {home_team} vs {away_team}")
                 
                 # Parse props from bookmakers
                 if 'bookmakers' not in odds_data:
@@ -711,13 +712,12 @@ def props_cheatsheet():
                             }
                             
                             stat_type = stat_type_map.get(market_key, 'points')
-                            projection_data = calculate_projection(player_id, stat_type)
                             
-                            if not projection_data:
-                                projection_data = {
-                                    'projection': line,
-                                    'hit_rates': {'l5': 50, 'l10': 50, 'l15': 50, 'this_season': 50}
-                                }
+                            # TEMP: Skip projections to fix timeout
+                            projection_data = {
+                                'projection': line,
+                                'hit_rates': {'l5': 50, 'l10': 50, 'l15': 50, 'this_season': 50}
+                            }
                             
                             projection = projection_data['projection']
                             hit_rates = projection_data['hit_rates']
