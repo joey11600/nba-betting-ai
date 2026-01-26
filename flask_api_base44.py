@@ -37,6 +37,30 @@ _player_cache_time = None
 PLAYER_META_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 _player_meta_cache = {}
 
+# Pre-warm player cache on startup to prevent first-request timeout
+def load_player_cache_on_startup():
+    """Load player cache in background on startup"""
+    global _player_cache, _player_cache_time
+    
+    if not NBA_API_AVAILABLE:
+        print("⚠️  NBA API not available, skipping player cache")
+        return
+    
+    try:
+        print("🔄 Pre-warming player cache on startup...")
+        all_players = players.get_players()
+        _player_cache = [p for p in all_players if p.get("is_active")]
+        _player_cache_time = time.time()
+        print(f"✅ Player cache ready: {len(_player_cache)} active players")
+    except Exception as e:
+        print(f"❌ Failed to pre-warm player cache: {e}")
+
+# Start loading players in background thread
+print("🚀 Starting player cache warm-up thread...")
+startup_thread = threading.Thread(target=load_player_cache_on_startup)
+startup_thread.daemon = True
+startup_thread.start()
+
 # Props cache (prevents timeout on repeated requests)
 _props_cache = {}  # "date_market" -> {"props": [...], "timestamp": float}
 _props_cache_lock = threading.Lock()
