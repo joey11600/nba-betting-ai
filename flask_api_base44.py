@@ -28,6 +28,49 @@ except ImportError:
     NBA_API_AVAILABLE = False
     print("⚠️  Install nba_api: pip install nba_api pandas")
 
+# Patch nba_api to use browser headers (prevents stats.nba.com IP blocking on Railway)
+if NBA_API_AVAILABLE:
+    import nba_api.library.http as nba_http_module
+    _original_get_session = nba_http_module.NBAStatsHTTP.get_session
+    def _patched_get_session(self):
+        session = _original_get_session(self)
+        session.headers.update({
+            'Host': 'stats.nba.com',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'x-nba-stats-origin': 'stats',
+            'x-nba-stats-token': 'true',
+            'Connection': 'keep-alive',
+            'Referer': 'https://www.nba.com/',
+            'Origin': 'https://www.nba.com',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-site',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
+        })
+        return session
+    nba_http_module.NBAStatsHTTP.get_session = _patched_get_session
+    print("✅ NBA API browser headers patched")
+
+
+def nba_api_call_with_retry(func, *args, max_retries=3, **kwargs):
+    """Call any nba_api endpoint with automatic retry on timeout"""
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            if 'timeout' in str(e).lower() or 'timed out' in str(e).lower():
+                wait = (attempt + 1) * 2
+                print(f"⚠️ NBA API timeout (attempt {attempt+1}/{max_retries}), retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                raise
+    raise Exception(f"NBA API failed after {max_retries} attempts")
+
+
 app = Flask(__name__)
 CORS(app)
 
@@ -78,7 +121,10 @@ def get_player_metadata(player_id: int):
     time.sleep(0.6)
     
     try:
-        info = commonplayerinfo.CommonPlayerInfo(player_id=player_id)
+        info = nba_api_call_with_retry(
+            commonplayerinfo.CommonPlayerInfo,
+            player_id=player_id
+        )
         common_df = info.common_player_info.get_data_frame()
         headline_df = info.player_headline_stats.get_data_frame()
         
@@ -375,7 +421,8 @@ def research_player():
         
         # Get game logs
         time.sleep(0.6)
-        gamelog = playergamelog.PlayerGameLog(
+        gamelog = nba_api_call_with_retry(
+            playergamelog.PlayerGameLog,
             player_id=player_id,
             season=season_to_query,
             season_type_all_star=season_type
@@ -961,12 +1008,16 @@ def calculate_projection(player_id, stat_type):
         
         # Get recent games
         time.sleep(0.6)
-        gamelog = playergamelog.PlayerGameLog(player_id=player_id, season=season)
+        gamelog = nba_api_call_with_retry(
+            playergamelog.PlayerGameLog,
+            player_id=player_id,
+            season=season
+        )
         df = gamelog.get_data_frames()[0]
-        
+
         if df.empty:
             return None
-        
+
         # Map stat types
         stat_map = {
             'points': 'PTS',
@@ -1068,13 +1119,17 @@ def get_game_for_date(player_id: int, game_date: str):
             season = f"{date_obj.year - 1}-{str(date_obj.year)[-2:]}"
         
         time.sleep(0.6)
-        gamelog = playergamelog.PlayerGameLog(player_id=player_id, season=season)
-        
+        gamelog = nba_api_call_with_retry(
+            playergamelog.PlayerGameLog,
+            player_id=player_id,
+            season=season
+        )
+
         df = gamelog.get_data_frames()[0]
-        
+
         if df.empty:
             return None
-        
+
         df["GAME_DATE_DT"] = pd.to_datetime(df["GAME_DATE"]).dt.date
         game_date_obj = pd.to_datetime(game_date).date()
         matching_games = df[df["GAME_DATE_DT"] == game_date_obj]
