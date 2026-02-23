@@ -1122,6 +1122,23 @@ def root():
     })
 
 
+# Pre-warm cheatsheet cache in background on startup
+def prewarm_cheatsheet_cache():
+    """Pre-calculate today's cheatsheet on startup"""
+    import time
+    time.sleep(10)  # Let server fully start first
+    try:
+        today = datetime.now(LOCAL_TZ).strftime('%Y-%m-%d')
+        print(f"🔄 Pre-warming cheatsheet cache for {today}...")
+        with app.test_request_context(f'/api/props/cheatsheet?date={today}&market=all'):
+            props_cheatsheet()
+        print("✅ Cheatsheet cache ready!")
+    except Exception as e:
+        print(f"⚠️ Cheatsheet pre-warm failed (non-fatal): {e}")
+cheatsheet_thread = threading.Thread(target=prewarm_cheatsheet_cache, daemon=True)
+cheatsheet_thread.start()
+
+
 # =======================
 # RUN SERVER
 # =======================
