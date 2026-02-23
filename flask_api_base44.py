@@ -34,42 +34,31 @@ CORS(app)
 # Caches
 _player_cache = None
 _player_cache_time = None
-PLAYER_META_TTL_SECONDS = 24 * 60 * 60  # 24 hours
+PLAYER_META_TTL_SECONDS = 24 * 60 * 60
 _player_meta_cache = {}
 
-# Pre-warm player cache on startup to prevent first-request timeout
-def load_player_cache_on_startup():
-    """Load player cache in background on startup"""
-    global _player_cache, _player_cache_time
-    
-    if not NBA_API_AVAILABLE:
-        print("⚠️  NBA API not available, skipping player cache")
-        return
-    
+# Pre-warm player cache on module load
+if NBA_API_AVAILABLE:
     try:
-        print("🔄 Pre-warming player cache on startup...")
+        print("🔄 Pre-warming player cache on module load...")
         all_players = players.get_players()
         _player_cache = [p for p in all_players if p.get("is_active")]
         _player_cache_time = time.time()
         print(f"✅ Player cache ready: {len(_player_cache)} active players")
     except Exception as e:
         print(f"❌ Failed to pre-warm player cache: {e}")
+        _player_cache = []
+        _player_cache_time = time.time()
 
-# Start loading players in background thread
-print("🚀 Starting player cache warm-up thread...")
-startup_thread = threading.Thread(target=load_player_cache_on_startup)
-startup_thread.daemon = True
-startup_thread.start()
-
-# Props cache (prevents timeout on repeated requests)
-_props_cache = {}  # "date_market" -> {"props": [...], "timestamp": float}
+# Props cache
+_props_cache = {}
 _props_cache_lock = threading.Lock()
-PROPS_CACHE_TTL = 6 * 60 * 60  # 6 hours
+PROPS_CACHE_TTL = 6 * 60 * 60
 
-# Raw Odds API cache (even if processing fails, we don't re-fetch)
-_odds_raw_cache = {}  # "date" -> {"events": [...], "odds": {...}, "timestamp": float}
+# Raw Odds API cache
+_odds_raw_cache = {}
 _odds_raw_cache_lock = threading.Lock()
-ODDS_RAW_CACHE_TTL = 6 * 60 * 60  # 6 hours
+ODDS_RAW_CACHE_TTL = 6 * 60 * 60
 
 
 # =======================
